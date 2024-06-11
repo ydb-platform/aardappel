@@ -1,8 +1,0 @@
-syntax = "proto3";
-
-package collector_server;
-option go_package = "https://github.com/dcherednik/Aardappel/internal/protos";
-
-message SomeMessage {
-  int32 port = 1;
-}

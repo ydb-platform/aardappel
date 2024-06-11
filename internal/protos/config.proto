@@ -1,0 +1,19 @@
+syntax = "proto3";
+
+package aardappel_config;
+option go_package = "https://github.com/dcherednik/Aardappel/internal/protos";
+
+message Stream {
+  string src_topic = 1;
+  string dst_table = 2;
+}
+
+message Config {
+  string src_connection_string = 1;
+  string dst_connection_string = 2;
+
+  repeated Stream streams = 3;
+
+  string state_table = 4;
+}
+
