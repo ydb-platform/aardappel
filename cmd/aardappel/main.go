@@ -5,6 +5,8 @@ import (
 	"aardappel/internal/util/xlog"
 	"context"
 	"flag"
+	"github.com/ydb-platform/ydb-go-sdk/v3"
+	"go.uber.org/zap"
 	"google.golang.org/protobuf/encoding/prototext"
 	"os"
 )
@@ -38,11 +40,17 @@ func main() {
 
 	xlog.Debug(ctx, "Use configuration file: "+confPath+", config:\n"+config.String())
 	// Connect to YDB
-	//db, err := ydb.Open(ctx, sugar.DSN(endpoint, database, false))
-	//if err != nil {
-	//	logger.Fatal("db connection error", zap.Error(err))
-	//	return
-	//}
+	_, srcErr := ydb.Open(ctx, config.GetSrcConnectionString())
+	if srcErr != nil {
+		xlog.Error(ctx, "Unable to connect to src cluster", zap.Error(srcErr))
+		os.Exit(1)
+	}
+
+	_, dstErr := ydb.Open(ctx, config.GetDstConnectionString())
+	if dstErr != nil {
+		xlog.Error(ctx, "Unable to connect to dst cluster", zap.Error(dstErr))
+		os.Exit(1)
+	}
 	//client := db.Table()
 
 	// Perform YDB operation
