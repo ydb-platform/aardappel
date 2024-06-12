@@ -1,0 +1,10 @@
+src_connection_string: "grpcs://cluster1"
+dst_connection_string: "grpcs://cluster2"
+
+streams:
+  - src_topic: "topic1"
+    dst_table: "table1"
+  - src_topic: "topic2"
+    dst_table: "table2"
+
+state_table: "state_table"
