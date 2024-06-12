@@ -1,21 +1,19 @@
 package main
 
 import (
-	"aardappel/internal/protos"
+	configInit "aardappel/internal/config"
 	"aardappel/internal/util/xlog"
 	"context"
 	"flag"
 	"github.com/ydb-platform/ydb-go-sdk/v3"
 	"go.uber.org/zap"
-	"google.golang.org/protobuf/encoding/prototext"
 	"os"
 )
 
 func main() {
 	var confPath string
-	var config protos.Config
 
-	flag.StringVar(&confPath, "config", "aardappel.conf", "aardappel configuration file")
+	flag.StringVar(&confPath, "config", "config.yaml", "aardappel configuration file")
 	flag.Parse()
 
 	ctx := context.Background()
@@ -25,28 +23,27 @@ func main() {
 	xlog.SetInternalLogger(logger)
 	defer logger.Sync()
 
-	if len(confPath) != 0 {
-		confTxt, err := os.ReadFile(confPath)
-		if err != nil {
-			xlog.Error(ctx, "Unable to read configuration file: "+confPath+", err: "+err.Error())
-			os.Exit(1)
-		}
-		err = prototext.Unmarshal(confTxt, &config)
-		if err != nil {
-			xlog.Error(ctx, "Unable to parse configuration file: "+confPath+", err: "+err.Error())
-			os.Exit(1)
-		}
+	// Setup config
+	config, err := configInit.InitConfig(ctx, confPath)
+	if err != nil {
+		xlog.Error(ctx, "Unable to initialize config", zap.Error(err))
+		os.Exit(1)
+	}
+	confStr, err := config.ToString()
+	if err == nil {
+		xlog.Debug(ctx, "Use configuration file",
+			zap.String("config_path", confPath),
+			zap.String("config", confStr))
 	}
 
-	xlog.Debug(ctx, "Use configuration file: "+confPath+", config:\n"+config.String())
 	// Connect to YDB
-	_, srcErr := ydb.Open(ctx, config.GetSrcConnectionString())
+	_, srcErr := ydb.Open(ctx, config.SrcConnectionString)
 	if srcErr != nil {
 		xlog.Error(ctx, "Unable to connect to src cluster", zap.Error(srcErr))
 		os.Exit(1)
 	}
 
-	_, dstErr := ydb.Open(ctx, config.GetDstConnectionString())
+	_, dstErr := ydb.Open(ctx, config.DstConnectionString)
 	if dstErr != nil {
 		xlog.Error(ctx, "Unable to connect to dst cluster", zap.Error(dstErr))
 		os.Exit(1)
