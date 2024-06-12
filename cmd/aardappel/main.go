@@ -26,12 +26,14 @@ func main() {
 	// Setup config
 	config, err := configInit.InitConfig(ctx, confPath)
 	if err != nil {
-		xlog.Error(ctx, "Unable to initialize config, err: %v", zap.Error(err))
+		xlog.Error(ctx, "Unable to initialize config", zap.Error(err))
 		os.Exit(1)
 	}
 	confStr, err := config.ToString()
 	if err == nil {
-		xlog.Debug(ctx, "Use configuration file: "+confPath+", config:\n"+confStr)
+		xlog.Debug(ctx, "Use configuration file",
+			zap.String("config_path", confPath),
+			zap.String("config", confStr))
 	}
 
 	// Connect to YDB
