@@ -30,8 +30,13 @@ func (data TxData) IsEraseOperation() bool {
 	return data.OperationType == TxOperationErase
 }
 
+type StreamId struct {
+	TopicId     int64
+	PartitionId int64
+}
+
 // Hb data
 type HbData struct {
-	PartitionId int64
+	PartitionId StreamId
 	Step        uint64
 }
