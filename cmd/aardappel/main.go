@@ -2,12 +2,13 @@ package main
 
 import (
 	configInit "aardappel/internal/config"
+	topicReader "aardappel/internal/reader"
 	"aardappel/internal/util/xlog"
 	"context"
 	"flag"
 	"github.com/ydb-platform/ydb-go-sdk/v3"
+	"github.com/ydb-platform/ydb-go-sdk/v3/topic/topicoptions"
 	"go.uber.org/zap"
-	"os"
 )
 
 func main() {
@@ -26,8 +27,7 @@ func main() {
 	// Setup config
 	config, err := configInit.InitConfig(ctx, confPath)
 	if err != nil {
-		xlog.Error(ctx, "Unable to initialize config", zap.Error(err))
-		os.Exit(1)
+		xlog.Fatal(ctx, "Unable to initialize config", zap.Error(err))
 	}
 	confStr, err := config.ToString()
 	if err == nil {
@@ -36,17 +36,34 @@ func main() {
 			zap.String("config", confStr))
 	}
 
-	// Connect to YDB
-	_, srcErr := ydb.Open(ctx, config.SrcConnectionString)
-	if srcErr != nil {
-		xlog.Error(ctx, "Unable to connect to src cluster", zap.Error(srcErr))
-		os.Exit(1)
+	opts := []ydb.Option{
+		ydb.WithAccessTokenCredentials("root@builtin"),
 	}
+
+	// Connect to YDB
+	srcDb, err := ydb.Open(ctx, config.SrcConnectionString, opts...)
+	if err != nil {
+		xlog.Fatal(ctx, "Unable to connect to src cluster", zap.Error(err))
+	}
+	xlog.Debug(ctx, "YDB opened")
+
+	for i := 0; i < len(config.Streams); i++ {
+		reader, err := srcDb.Topic().StartReader(config.Streams[i].Consumer, topicoptions.ReadTopic(config.Streams[i].SrcTopic))
+		if err != nil {
+			xlog.Fatal(ctx, "Unable to create topic reader",
+				zap.String("consumer", config.Streams[i].Consumer),
+				zap.String("src_topic", config.Streams[i].SrcTopic),
+				zap.Error(err))
+		}
+		xlog.Debug(ctx, "Start reading")
+		go topicReader.ReadTopic(ctx, reader)
+	}
+
+	//time.Sleep(20 * time.Second)
 
 	_, dstErr := ydb.Open(ctx, config.DstConnectionString)
 	if dstErr != nil {
-		xlog.Error(ctx, "Unable to connect to dst cluster", zap.Error(dstErr))
-		os.Exit(1)
+		xlog.Fatal(ctx, "Unable to connect to dst cluster", zap.Error(dstErr))
 	}
 	//client := db.Table()
 

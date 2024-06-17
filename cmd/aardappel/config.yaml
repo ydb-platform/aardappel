@@ -4,7 +4,9 @@ dst_connection_string: "grpcs://cluster2"
 streams:
   - src_topic: "topic1"
     dst_table: "table1"
+    consumer: "consumer"
   - src_topic: "topic2"
     dst_table: "table2"
+    consumer: "consumer"
 
 state_table: "state_table"

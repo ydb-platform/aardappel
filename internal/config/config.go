@@ -12,6 +12,7 @@ import (
 type Stream struct {
 	SrcTopic string `yaml:"src_topic"`
 	DstTable string `yaml:"dst_table"`
+	Consumer string `yaml:"consumer"`
 }
 
 type Config struct {
