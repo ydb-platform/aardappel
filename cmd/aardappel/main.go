@@ -47,6 +47,7 @@ func main() {
 	}
 	xlog.Debug(ctx, "YDB opened")
 
+	var readerId uint8 = 0
 	for i := 0; i < len(config.Streams); i++ {
 		reader, err := srcDb.Topic().StartReader(config.Streams[i].Consumer, topicoptions.ReadTopic(config.Streams[i].SrcTopic))
 		if err != nil {
@@ -56,7 +57,8 @@ func main() {
 				zap.Error(err))
 		}
 		xlog.Debug(ctx, "Start reading")
-		go topicReader.ReadTopic(ctx, reader)
+		go topicReader.ReadTopic(ctx, readerId, reader)
+		readerId++
 	}
 
 	//time.Sleep(20 * time.Second)

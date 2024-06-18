@@ -30,13 +30,14 @@ func (data TxData) IsEraseOperation() bool {
 	return data.OperationType == TxOperationErase
 }
 
+// ReaderId + PartitionId for uniq partition id in hb tracker
 type StreamId struct {
-	TopicId     int64
+	ReaderId    uint8
 	PartitionId int64
 }
 
 // Hb data
 type HbData struct {
-	PartitionId StreamId
-	Step        uint64
+	StreamId StreamId
+	Step     uint64
 }

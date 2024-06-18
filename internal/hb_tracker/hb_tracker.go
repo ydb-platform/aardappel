@@ -26,7 +26,7 @@ func NewHeartBeatTracker(total int) *HeartBeatTracker {
 }
 
 func (ht *HeartBeatTracker) AddHb(data types.HbData) error {
-	hb, ok := ht.streams[data.PartitionId]
+	hb, ok := ht.streams[data.StreamId]
 	if ok {
 		if hb.vt < data.Step {
 			hb.vt = data.Step
@@ -34,7 +34,7 @@ func (ht *HeartBeatTracker) AddHb(data types.HbData) error {
 	} else {
 		hb.vt = data.Step
 	}
-	ht.streams[data.PartitionId] = hb
+	ht.streams[data.StreamId] = hb
 
 	if len(ht.streams) > ht.totalStreamsNum {
 		return fmt.Errorf("Resulted stream count: %d grather than total count: %d",
@@ -53,12 +53,12 @@ func (ht *HeartBeatTracker) GetReady() (types.HbData, bool) {
 	var inited bool
 	for k, v := range ht.streams {
 		if !inited {
-			resHb.PartitionId = k
+			resHb.StreamId = k
 			resHb.Step = v.vt
 			inited = true
 		} else {
 			if v.vt < resHb.Step {
-				resHb.PartitionId = k
+				resHb.StreamId = k
 				resHb.Step = v.vt
 			}
 		}
@@ -68,7 +68,7 @@ func (ht *HeartBeatTracker) GetReady() (types.HbData, bool) {
 }
 
 func (ht *HeartBeatTracker) Commit(data types.HbData) bool {
-	hb, ok := ht.streams[data.PartitionId]
+	hb, ok := ht.streams[data.StreamId]
 	if !ok {
 		return true
 	}
