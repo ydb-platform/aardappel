@@ -10,28 +10,24 @@ type TxQueue struct {
 }
 
 func NewTxQueue() *TxQueue {
-	pq := NewPriorityQueue()
-	heap.Init(pq)
-	return &TxQueue{pq}
+	var pq PriorityQueue
+	pq.items = make([]QueueItem, 0)
+	heap.Init(&pq)
+	return &TxQueue{&pq}
 }
 
 func (txQueue *TxQueue) PushTx(data types.TxData) {
-	heap.Push(txQueue.pq, data)
+	item := &QueueItem{
+		item: data,
+	}
+	heap.Push(txQueue.pq, item)
 }
 
-func (txQueue *TxQueue) GetTxs(step uint64) []types.TxData {
+func (txQueue *TxQueue) PopTxs(step uint64) []types.TxData {
 	result := make([]types.TxData, 0)
-	for _, item := range txQueue.pq.items {
-		if item.item.Step >= step {
-			return result
-		}
+	for txQueue.pq.Get() != nil && txQueue.pq.Get().Step < step {
+		item := heap.Pop(txQueue.pq).(QueueItem)
 		result = append(result, item.item)
 	}
 	return result
-}
-
-func (txQueue *TxQueue) CleanTxs(step uint64) {
-	for txQueue.pq.Get() != nil && txQueue.pq.Get().Step < step {
-		var _ = heap.Pop(txQueue.pq)
-	}
 }
