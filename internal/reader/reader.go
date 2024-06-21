@@ -1,6 +1,7 @@
 package reader
 
 import (
+	"aardappel/internal/processor"
 	"aardappel/internal/types"
 	"aardappel/internal/util/xlog"
 	"context"
@@ -61,12 +62,12 @@ func ParseTxData(ctx context.Context, jsonData []byte) (types.TxData, error) {
 	data.Step = txData.TS[0]
 	data.TxId = txData.TS[1]
 
-	xlog.Debug(ctx, "Parsed tx data",
-		zap.Any("column_values", data.ColumnValues),
-		zap.String("operation_type", data.OperationType.String()),
-		zap.Any("key", data.KeyValues),
-		zap.Uint64("step", data.Step),
-		zap.Uint64("tx_id", data.TxId))
+	//xlog.Debug(ctx, "Parsed tx data",
+	//	zap.Any("column_values", data.ColumnValues),
+	//	zap.String("operation_type", data.OperationType.String()),
+	//	zap.Any("key", data.KeyValues),
+	//	zap.Uint64("step", data.Step),
+	//	zap.Uint64("tx_id", data.TxId))
 
 	return data, nil
 }
@@ -97,7 +98,7 @@ func ParseHBData(ctx context.Context, jsonData []byte, streamId types.StreamId) 
 	return data, nil
 }
 
-func ReadTopic(ctx context.Context, readerId uint8, reader *topicreader.Reader) {
+func ReadTopic(ctx context.Context, readerId uint8, reader *topicreader.Reader, channel processor.Channel) {
 	for {
 		msg, err := reader.ReadMessage(ctx)
 		if err != nil {
@@ -116,11 +117,20 @@ func ReadTopic(ctx context.Context, readerId uint8, reader *topicreader.Reader) 
 			xlog.Error(ctx, "Error parsing topic data", zap.Error(err))
 			return
 		}
+		//xlog.Debug(ctx, "xx", zap.Any("xx", topicData))
 		if topicData.Update != nil || topicData.Erase != nil {
-			ParseTxData(ctx, jsonData)
+			data, err := ParseTxData(ctx, jsonData)
+			if err != nil {
+				xlog.Error(ctx, "Invalid tx data")
+			}
+			channel.EnqueueTx(ctx, data)
 			// Add tx to txQueue
 		} else if topicData.Resolved != nil {
-			ParseHBData(ctx, jsonData, types.StreamId{readerId, msg.PartitionID()})
+			data, err := ParseHBData(ctx, jsonData, types.StreamId{readerId, msg.PartitionID()})
+			if err != nil {
+				xlog.Error(ctx, "Invalid hb data")
+			}
+			channel.EnqueueHb(ctx, data)
 			// Update last hb for partition
 		} else {
 			xlog.Error(ctx, "Unknown format of topic message")

@@ -3,6 +3,7 @@ package main
 import (
 	configInit "aardappel/internal/config"
 	"aardappel/internal/dst_table"
+	processor "aardappel/internal/processor"
 	topicReader "aardappel/internal/reader"
 	"aardappel/internal/util/xlog"
 	"context"
@@ -10,6 +11,7 @@ import (
 	"github.com/ydb-platform/ydb-go-sdk/v3"
 	"github.com/ydb-platform/ydb-go-sdk/v3/topic/topicoptions"
 	"go.uber.org/zap"
+	"time"
 )
 
 func main() {
@@ -48,7 +50,22 @@ func main() {
 	}
 	xlog.Debug(ctx, "YDB opened")
 
+	var totalPartitions int
+	for i := 0; i < len(config.Streams); i++ {
+		desc, err := srcDb.Topic().Describe(ctx, config.Streams[i].SrcTopic)
+		if err != nil {
+			xlog.Fatal(ctx, "Unable to describe topic",
+				zap.String("src_topic", config.Streams[i].SrcTopic),
+				zap.Error(err))
+		}
+		totalPartitions += len(desc.Partitions)
+	}
+
+	xlog.Debug(ctx, "All topics described",
+		zap.Int("total parts", totalPartitions))
+
 	var readerId uint8 = 0
+	prc := processor.NewProcessor(totalPartitions)
 	for i := 0; i < len(config.Streams); i++ {
 		reader, err := srcDb.Topic().StartReader(config.Streams[i].Consumer, topicoptions.ReadTopic(config.Streams[i].SrcTopic))
 		if err != nil {
@@ -58,11 +75,18 @@ func main() {
 				zap.Error(err))
 		}
 		xlog.Debug(ctx, "Start reading")
-		go topicReader.ReadTopic(ctx, readerId, reader)
+		go topicReader.ReadTopic(ctx, readerId, reader, prc)
 		readerId++
 	}
 
-	//time.Sleep(20 * time.Second)
+	for {
+		_, err = prc.FormatTx(ctx)
+		if err != nil {
+			xlog.Fatal(ctx, "Unable to format tx for destination")
+		}
+	}
+
+	time.Sleep(20 * time.Second)
 
 	db, err := ydb.Open(ctx, config.DstConnectionString)
 	if err != nil {
