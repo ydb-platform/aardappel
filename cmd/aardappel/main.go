@@ -2,6 +2,7 @@ package main
 
 import (
 	configInit "aardappel/internal/config"
+	"aardappel/internal/dst_table"
 	topicReader "aardappel/internal/reader"
 	"aardappel/internal/util/xlog"
 	"context"
@@ -63,10 +64,20 @@ func main() {
 
 	//time.Sleep(20 * time.Second)
 
-	_, dstErr := ydb.Open(ctx, config.DstConnectionString)
-	if dstErr != nil {
-		xlog.Fatal(ctx, "Unable to connect to dst cluster", zap.Error(dstErr))
+	db, err := ydb.Open(ctx, config.DstConnectionString)
+	if err != nil {
+		xlog.Fatal(ctx, "Unable to connect to dst cluster", zap.Error(err))
 	}
+
+	client := db.Table()
+	for i := 0; i < len(config.Streams); i++ {
+		dstTable := dst_table.NewDstTable(client, config.Streams[i].DstTable)
+		err := dstTable.Init(ctx)
+		if err != nil {
+			xlog.Fatal(ctx, "Unable to init dst table", zap.Error(err))
+		}
+	}
+
 	//client := db.Table()
 
 	// Perform YDB operation
