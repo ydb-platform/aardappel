@@ -14,10 +14,11 @@ import (
 )
 
 type TopicTxData struct {
-	Update map[string]interface{} `json:"update"`
-	Erase  map[string]interface{} `json:"erase"`
-	Key    []interface{}          `json:"key"`
-	TS     []uint64               `json:"ts"`
+	Update   map[string]json.RawMessage `json:"update"`
+	NewImage map[string]json.RawMessage `json:"newImage"`
+	Erase    map[string]interface{}     `json:"erase"`
+	Key      []json.RawMessage          `json:"key"`
+	TS       []uint64                   `json:"ts"`
 }
 
 type TopicResolvedData struct {
@@ -45,11 +46,15 @@ func ParseTxData(ctx context.Context, jsonData []byte) (types.TxData, error) {
 
 	var data types.TxData
 	if txData.Update != nil {
-		data.ColumnValues = txData.Update
+		if len(txData.NewImage) > 0 {
+			data.ColumnValues = txData.NewImage
+		} else {
+			data.ColumnValues = txData.Update
+		}
 		data.OperationType = types.TxOperationUpdate
 	}
 	if txData.Erase != nil {
-		data.ColumnValues = txData.Erase
+		data.ColumnValues = map[string]json.RawMessage{}
 		data.OperationType = types.TxOperationErase
 	}
 	data.KeyValues = txData.Key
@@ -121,14 +126,16 @@ func ReadTopic(ctx context.Context, readerId uint8, reader *topicreader.Reader, 
 		if topicData.Update != nil || topicData.Erase != nil {
 			data, err := ParseTxData(ctx, jsonData)
 			if err != nil {
-				xlog.Error(ctx, "Invalid tx data")
+				xlog.Error(ctx, "ParseTxData: Error parsing tx data", zap.Error(err))
+				return
 			}
 			channel.EnqueueTx(ctx, data)
 			// Add tx to txQueue
 		} else if topicData.Resolved != nil {
 			data, err := ParseHBData(ctx, jsonData, types.StreamId{readerId, msg.PartitionID()})
 			if err != nil {
-				xlog.Error(ctx, "Invalid hb data")
+				xlog.Error(ctx, "ParseTxData: Error parsing hb data", zap.Error(err))
+				return
 			}
 			channel.EnqueueHb(ctx, data)
 			// Update last hb for partition

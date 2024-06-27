@@ -1,5 +1,7 @@
 package types
 
+import "encoding/json"
+
 // Tx data
 
 type TxOperationType uint8
@@ -15,8 +17,8 @@ func (o TxOperationType) String() string {
 }
 
 type TxData struct {
-	ColumnValues  map[string]interface{}
-	KeyValues     []interface{}
+	ColumnValues  map[string]json.RawMessage
+	KeyValues     []json.RawMessage
 	Step          uint64
 	TxId          uint64
 	OperationType TxOperationType
