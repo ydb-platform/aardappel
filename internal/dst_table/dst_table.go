@@ -79,7 +79,7 @@ func (dstTable *DstTable) PushAsSingleTx(ctx context.Context, data PushQuery) er
 }
 
 func (dstTable *DstTable) Push(ctx context.Context, txData []types.TxData) error {
-	query, err := GenQuery(ctx, dstTable.tableInfo, txData)
+	query, err := GenQuery(ctx, dstTable.tableInfo, txData, 0)
 	if err != nil {
 		xlog.Error(ctx, "Can't gen query", zap.Error(err))
 		return fmt.Errorf("Push: %w", err)

@@ -240,9 +240,9 @@ func GenListParam(ctx context.Context, tableMetaInfo TableMetaInfo, txsData []ty
 	return ydb_types.ListValue(values...), nil
 }
 
-func GenQueryFromUpdateTx(ctx context.Context, tableMetaInfo TableMetaInfo, txData []types.TxData, statementNum int) (QueryStatement, error) {
+func GenQueryFromUpdateTx(ctx context.Context, tableMetaInfo TableMetaInfo, txData []types.TxData, localStatementNum int, globalStatementNum int) (QueryStatement, error) {
 	result := NewQueryStatement()
-	pName := "$p" + string(fmt.Sprint(statementNum))
+	pName := "$p_" + string(fmt.Sprint(globalStatementNum)) + "_" + string(fmt.Sprint(localStatementNum))
 	result.Statement = "UPSERT INTO " + tableMetaInfo.Name + " SELECT * FROM AS_TABLE(" + pName + ");\n"
 	param, err := GenListParam(ctx, tableMetaInfo, txData)
 	if err != nil {
@@ -253,9 +253,9 @@ func GenQueryFromUpdateTx(ctx context.Context, tableMetaInfo TableMetaInfo, txDa
 	return *result, nil
 }
 
-func GenQueryFromEraseTx(ctx context.Context, tableMetaInfo TableMetaInfo, txData []types.TxData, statementNum int) (QueryStatement, error) {
+func GenQueryFromEraseTx(ctx context.Context, tableMetaInfo TableMetaInfo, txData []types.TxData, localStatementNum int, globalStatementNum int) (QueryStatement, error) {
 	result := NewQueryStatement()
-	pName := "$p" + string(fmt.Sprint(statementNum))
+	pName := "$p_" + string(fmt.Sprint(globalStatementNum)) + "_" + string(fmt.Sprint(localStatementNum))
 	result.Statement = "DELETE FROM " + tableMetaInfo.Name + " ON SELECT * FROM AS_TABLE(" + pName + ");\n"
 	param, err := GenListParam(ctx, tableMetaInfo, txData)
 	if err != nil {
@@ -266,7 +266,7 @@ func GenQueryFromEraseTx(ctx context.Context, tableMetaInfo TableMetaInfo, txDat
 	return *result, nil
 }
 
-func GenQueryByTxsType(ctx context.Context, tableMetaInfo TableMetaInfo, txData []types.TxData) (QueryStatement, error) {
+func GenQueryByTxsType(ctx context.Context, tableMetaInfo TableMetaInfo, txData []types.TxData, globalStatementNum int) (QueryStatement, error) {
 	result := NewQueryStatement()
 	updateTxs := make([]types.TxData, 0)
 	eraseTxs := make([]types.TxData, 0)
@@ -280,7 +280,7 @@ func GenQueryByTxsType(ctx context.Context, tableMetaInfo TableMetaInfo, txData 
 		if txData[i].IsUpdateOperation() {
 			updateTxs = append(updateTxs, txData[i])
 			if !lastTxIsUpdate {
-				txQuery, err := GenQueryFromEraseTx(ctx, tableMetaInfo, eraseTxs, statementNum)
+				txQuery, err := GenQueryFromEraseTx(ctx, tableMetaInfo, eraseTxs, statementNum, globalStatementNum)
 				statementNum++
 				if err != nil {
 					xlog.Error(ctx, "error in gen query for erase txs", zap.Error(err))
@@ -296,7 +296,7 @@ func GenQueryByTxsType(ctx context.Context, tableMetaInfo TableMetaInfo, txData 
 		if txData[i].IsEraseOperation() {
 			eraseTxs = append(eraseTxs, txData[i])
 			if lastTxIsUpdate {
-				txQuery, err := GenQueryFromUpdateTx(ctx, tableMetaInfo, updateTxs, statementNum)
+				txQuery, err := GenQueryFromUpdateTx(ctx, tableMetaInfo, updateTxs, statementNum, globalStatementNum)
 				statementNum++
 				if err != nil {
 					xlog.Error(ctx, "error in gen query for update txs", zap.Error(err))
@@ -313,7 +313,7 @@ func GenQueryByTxsType(ctx context.Context, tableMetaInfo TableMetaInfo, txData 
 	}
 
 	if len(updateTxs) > 0 {
-		txQuery, err := GenQueryFromUpdateTx(ctx, tableMetaInfo, updateTxs, statementNum)
+		txQuery, err := GenQueryFromUpdateTx(ctx, tableMetaInfo, updateTxs, statementNum, globalStatementNum)
 		if err != nil {
 			xlog.Error(ctx, "error in gen query for update txs", zap.Error(err))
 			return QueryStatement{}, fmt.Errorf("GenQuery: %w", err)
@@ -322,7 +322,7 @@ func GenQueryByTxsType(ctx context.Context, tableMetaInfo TableMetaInfo, txData 
 		result.Params = append(result.Params, txQuery.Params...)
 	}
 	if len(eraseTxs) > 0 {
-		txQuery, err := GenQueryFromEraseTx(ctx, tableMetaInfo, eraseTxs, statementNum)
+		txQuery, err := GenQueryFromEraseTx(ctx, tableMetaInfo, eraseTxs, statementNum, globalStatementNum)
 		if err != nil {
 			xlog.Error(ctx, "error in gen query for erase txs", zap.Error(err))
 			return QueryStatement{}, fmt.Errorf("GenQuery: %w", err)
@@ -334,9 +334,9 @@ func GenQueryByTxsType(ctx context.Context, tableMetaInfo TableMetaInfo, txData 
 	return *result, nil
 }
 
-func GenQuery(ctx context.Context, tableMetaInfo TableMetaInfo, txData []types.TxData) (PushQuery, error) {
+func GenQuery(ctx context.Context, tableMetaInfo TableMetaInfo, txData []types.TxData, globalStatementNum int) (PushQuery, error) {
 	var result PushQuery
-	txQuery, err := GenQueryByTxsType(ctx, tableMetaInfo, txData)
+	txQuery, err := GenQueryByTxsType(ctx, tableMetaInfo, txData, globalStatementNum)
 	if err != nil {
 		xlog.Error(ctx, "error in gen query for all txs", zap.Error(err))
 		return PushQuery{}, fmt.Errorf("GenQuery: %w", err)
