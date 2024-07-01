@@ -3,10 +3,10 @@ dst_connection_string: "grpc://127.0.0.1:28048/Root/test"
 
 streams:
   - src_topic: "producer1/cf1"
-    dst_table: "table1_rep"
+    dst_table: "/Root/test/table1_rep"
     consumer: "c1"
   - src_topic: "producer2/cf2"
-    dst_table: "table2_rep"
+    dst_table: "/Root/test/table2_rep"
     consumer: "c1"
 
 state_table: "state_table"

@@ -5,12 +5,8 @@ import (
 	"fmt"
 )
 
-type heartBeat struct {
-	vt uint64
-}
-
 type HeartBeatTracker struct {
-	streams         map[types.StreamId]heartBeat
+	streams         map[types.StreamId]types.HbData
 	totalStreamsNum int
 }
 
@@ -24,7 +20,7 @@ func NewHeartBeatTracker(total int) *HeartBeatTracker {
 	}
 
 	var hbt HeartBeatTracker
-	hbt.streams = make(map[types.StreamId]heartBeat)
+	hbt.streams = make(map[types.StreamId]types.HbData)
 	hbt.totalStreamsNum = total
 	return &hbt
 }
@@ -32,11 +28,16 @@ func NewHeartBeatTracker(total int) *HeartBeatTracker {
 func (ht *HeartBeatTracker) AddHb(data types.HbData) error {
 	hb, ok := ht.streams[data.StreamId]
 	if ok {
-		if hb.vt < data.Step {
-			hb.vt = data.Step
+		if hb.Step < data.Step {
+			// Got new heartbeat for stream - we can commit previous one
+			err := hb.CommitTopic()
+			if err != nil {
+				return err
+			}
+			hb = data
 		}
 	} else {
-		hb.vt = data.Step
+		hb = data
 	}
 	ht.streams[data.StreamId] = hb
 
@@ -55,15 +56,13 @@ func (ht *HeartBeatTracker) GetReady() (types.HbData, bool) {
 	}
 
 	var inited bool
-	for k, v := range ht.streams {
+	for _, v := range ht.streams {
 		if !inited {
-			resHb.StreamId = k
-			resHb.Step = v.vt
+			resHb = v
 			inited = true
 		} else {
-			if v.vt < resHb.Step {
-				resHb.StreamId = k
-				resHb.Step = v.vt
+			if v.Step < resHb.Step {
+				resHb = v
 			}
 		}
 	}
@@ -76,7 +75,7 @@ func (ht *HeartBeatTracker) Commit(data types.HbData) bool {
 	if !ok {
 		return true
 	}
-	if hb.vt > data.Step {
+	if hb.Step > data.Step {
 		return false
 	} else {
 		delete(ht.streams, data.StreamId)

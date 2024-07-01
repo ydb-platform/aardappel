@@ -31,7 +31,7 @@ type TopicData struct {
 	Resolved json.RawMessage `json:"resolved"`
 }
 
-func ParseTxData(ctx context.Context, jsonData []byte) (types.TxData, error) {
+func ParseTxData(ctx context.Context, jsonData []byte, readerId uint32) (types.TxData, error) {
 	var txData TopicTxData
 	err := json.Unmarshal(jsonData, &txData)
 	if err != nil {
@@ -58,6 +58,7 @@ func ParseTxData(ctx context.Context, jsonData []byte) (types.TxData, error) {
 		data.OperationType = types.TxOperationErase
 	}
 	data.KeyValues = txData.Key
+	data.TableId = readerId
 
 	if len(txData.TS) != 2 {
 		xlog.Error(ctx, "Unable to get step and tx_id from tx data",
@@ -103,7 +104,7 @@ func ParseHBData(ctx context.Context, jsonData []byte, streamId types.StreamId) 
 	return data, nil
 }
 
-func ReadTopic(ctx context.Context, readerId uint8, reader *topicreader.Reader, channel processor.Channel) {
+func ReadTopic(ctx context.Context, readerId uint32, reader *topicreader.Reader, channel processor.Channel) {
 	for {
 		msg, err := reader.ReadMessage(ctx)
 		if err != nil {
@@ -124,10 +125,13 @@ func ReadTopic(ctx context.Context, readerId uint8, reader *topicreader.Reader, 
 		}
 		//xlog.Debug(ctx, "xx", zap.Any("xx", topicData))
 		if topicData.Update != nil || topicData.Erase != nil {
-			data, err := ParseTxData(ctx, jsonData)
+			data, err := ParseTxData(ctx, jsonData, readerId)
 			if err != nil {
 				xlog.Error(ctx, "ParseTxData: Error parsing tx data", zap.Error(err))
 				return
+			}
+			data.CommitTopic = func() error {
+				return reader.Commit(msg.Context(), msg)
 			}
 			channel.EnqueueTx(ctx, data)
 			// Add tx to txQueue
@@ -137,16 +141,13 @@ func ReadTopic(ctx context.Context, readerId uint8, reader *topicreader.Reader, 
 				xlog.Error(ctx, "ParseTxData: Error parsing hb data", zap.Error(err))
 				return
 			}
+			data.CommitTopic = func() error {
+				return reader.Commit(msg.Context(), msg)
+			}
 			channel.EnqueueHb(ctx, data)
 			// Update last hb for partition
 		} else {
 			xlog.Error(ctx, "Unknown format of topic message")
-			return
-		}
-
-		err = reader.Commit(msg.Context(), msg)
-		if err != nil {
-			xlog.Error(ctx, "Unable to commit", zap.Error(err))
 			return
 		}
 	}

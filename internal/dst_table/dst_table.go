@@ -91,3 +91,11 @@ func (dstTable *DstTable) Push(ctx context.Context, txData []types.TxData) error
 	}
 	return nil
 }
+
+func (dstTable *DstTable) GenQuery(ctx context.Context, txData []types.TxData, globalStatementNum int) (PushQuery, error) {
+	query, err := GenQuery(ctx, dstTable.tableInfo, txData, globalStatementNum)
+	if err != nil {
+		xlog.Error(ctx, "Can't gen query", zap.Error(err))
+	}
+	return query, err
+}

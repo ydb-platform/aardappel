@@ -6,14 +6,19 @@ import (
 	"aardappel/internal/types"
 	"aardappel/internal/util/xlog"
 	"context"
+	"fmt"
+	"github.com/ydb-platform/ydb-go-sdk/v3/table"
+	"github.com/ydb-platform/ydb-go-sdk/v3/table/result/named"
 	"go.uber.org/zap"
 	"time"
 )
 
 type Processor struct {
-	txChannel chan func() error
-	hbTracker *hb_tracker.HeartBeatTracker
-	txQueue   *tx_queue.TxQueue
+	txChannel       chan func() error
+	hbTracker       *hb_tracker.HeartBeatTracker
+	txQueue         *tx_queue.TxQueue
+	dstServerClient table.Client
+	lastStep        uint64
 }
 
 type Channel interface {
@@ -26,21 +31,53 @@ type TxBatch struct {
 	Hb     types.HbData
 }
 
-func NewProcessor(total int) *Processor {
+func NewProcessor(ctx context.Context, total int, stateTable string, client table.Client) (*Processor, error) {
 	var p Processor
 	p.hbTracker = hb_tracker.NewHeartBeatTracker(total)
-	p.txChannel = make(chan func() error)
+	p.txChannel = make(chan func() error, 100)
 	p.txQueue = tx_queue.NewTxQueue()
-	return &p
+	p.dstServerClient = client
+	stateQuery := fmt.Sprintf("SELECT step_id FROM %v WHERE id = 0;", stateTable)
+	var step *uint64
+	err := p.dstServerClient.DoTx(ctx,
+		func(ctx context.Context, tx table.TransactionActor) error {
+			res, err := tx.Execute(ctx, stateQuery, nil)
+			if err != nil {
+				return err
+			}
+			res.NextResultSet(ctx)
+			res.NextRow()
+			return res.ScanNamed(
+				named.Optional("step_id", &step),
+			)
+		})
+	if err != nil {
+		return nil, err
+	}
+	p.lastStep = *step
+	xlog.Debug(ctx, "processor created", zap.Uint64("last step", p.lastStep))
+	return &p, err
 }
 
 func (processor *Processor) EnqueueHb(ctx context.Context, hb types.HbData) {
+	// Skip all before we already processed
+	if hb.Step < processor.lastStep {
+		_ = hb.CommitTopic()
+		xlog.Debug(ctx, "skip old hb", zap.Uint64("step", hb.Step))
+		return
+	}
 	processor.txChannel <- func() error {
 		return processor.hbTracker.AddHb(hb)
 	}
 }
 
 func (processor *Processor) EnqueueTx(ctx context.Context, tx types.TxData) {
+	// Skip all before we already processed
+	if tx.Step < processor.lastStep {
+		_ = tx.CommitTopic()
+		xlog.Debug(ctx, "skip old tx", zap.Uint64("step", tx.Step))
+		return
+	}
 	processor.txChannel <- func() error {
 		processor.txQueue.PushTx(tx)
 		return nil
@@ -83,7 +120,8 @@ func (processor *Processor) FormatTx(ctx context.Context) (*TxBatch, error) {
 			zap.String("operation_type", data.OperationType.String()),
 			zap.Any("key", data.KeyValues),
 			zap.Uint64("step", data.Step),
-			zap.Uint64("tx_id", data.TxId))
+			zap.Uint64("tx_id", data.TxId),
+			zap.Uint32("tableId:", data.TableId))
 	}
 	return &TxBatch{TxData: txs, Hb: hb}, nil
 }

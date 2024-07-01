@@ -4,14 +4,15 @@ import (
 	configInit "aardappel/internal/config"
 	"aardappel/internal/dst_table"
 	processor "aardappel/internal/processor"
+	"aardappel/internal/pusher"
 	topicReader "aardappel/internal/reader"
+	"aardappel/internal/types"
 	"aardappel/internal/util/xlog"
 	"context"
 	"flag"
 	"github.com/ydb-platform/ydb-go-sdk/v3"
 	"github.com/ydb-platform/ydb-go-sdk/v3/topic/topicoptions"
 	"go.uber.org/zap"
-	"time"
 )
 
 func main() {
@@ -50,6 +51,11 @@ func main() {
 	}
 	xlog.Debug(ctx, "YDB opened")
 
+	dstDb, err := ydb.Open(ctx, config.DstConnectionString, opts...)
+	if err != nil {
+		xlog.Fatal(ctx, "Unable to connect to dst cluster", zap.Error(err))
+	}
+
 	var totalPartitions int
 	for i := 0; i < len(config.Streams); i++ {
 		desc, err := srcDb.Topic().Describe(ctx, config.Streams[i].SrcTopic)
@@ -64,8 +70,11 @@ func main() {
 	xlog.Debug(ctx, "All topics described",
 		zap.Int("total parts", totalPartitions))
 
-	var readerId uint8 = 0
-	prc := processor.NewProcessor(totalPartitions)
+	prc, err := processor.NewProcessor(ctx, totalPartitions, config.StateTable, dstDb.Table())
+	if err != nil {
+		xlog.Fatal(ctx, "Unable to create processor", zap.Error(err))
+	}
+	var dstTables []*dst_table.DstTable
 	for i := 0; i < len(config.Streams); i++ {
 		reader, err := srcDb.Topic().StartReader(config.Streams[i].Consumer, topicoptions.ReadTopic(config.Streams[i].SrcTopic))
 		if err != nil {
@@ -74,50 +83,54 @@ func main() {
 				zap.String("src_topic", config.Streams[i].SrcTopic),
 				zap.Error(err))
 		}
+		dstTables = append(dstTables, dst_table.NewDstTable(dstDb.Table(), config.Streams[i].DstTable))
+		err = dstTables[i].Init(ctx)
+		if err != nil {
+			xlog.Fatal(ctx, "Unable to init dst table")
+		}
 		xlog.Debug(ctx, "Start reading")
-		go topicReader.ReadTopic(ctx, readerId, reader, prc)
-		readerId++
+		go topicReader.ReadTopic(ctx, uint32(i), reader, prc)
 	}
 
 	for {
-		_, err = prc.FormatTx(ctx)
+		txDataPerTable := make([][]types.TxData, len(dstTables))
+		batch, err := prc.FormatTx(ctx)
 		if err != nil {
 			xlog.Fatal(ctx, "Unable to format tx for destination")
 		}
-	}
+		for i := 0; i < len(batch.TxData); i++ {
+			txDataPerTable[batch.TxData[i].TableId] = append(txDataPerTable[batch.TxData[i].TableId], batch.TxData[i])
+		}
+		if len(txDataPerTable) != len(dstTables) {
+			xlog.Fatal(ctx, "Size of dstTables and tables in the tx mismatched",
+				zap.Int("txDataPertabe", len(txDataPerTable)),
+				zap.Int("dstTable", len(dstTables)))
+		}
+		var query dst_table.PushQuery
+		for i := 0; i < len(txDataPerTable); i++ {
+			q, err := dstTables[i].GenQuery(ctx, txDataPerTable[i], i)
+			if err != nil {
+				xlog.Fatal(ctx, "Unable to generate query")
+			}
+			query.Query += q.Query
+			query.Parameters = append(query.Parameters, q.Parameters...)
 
-	time.Sleep(20 * time.Second)
-
-	db, err := ydb.Open(ctx, config.DstConnectionString)
-	if err != nil {
-		xlog.Fatal(ctx, "Unable to connect to dst cluster", zap.Error(err))
-	}
-
-	client := db.Table()
-	for i := 0; i < len(config.Streams); i++ {
-		dstTable := dst_table.NewDstTable(client, config.Streams[i].DstTable)
-		err := dstTable.Init(ctx)
+		}
+		xlog.Debug(ctx, "Query to perform", zap.String("query", query.Query))
+		err = pusher.PushAsSingleTx(ctx, dstDb.Table(), query, types.Position{Step: batch.Hb.Step, TxId: 0}, config.StateTable)
 		if err != nil {
-			xlog.Fatal(ctx, "Unable to init dst table", zap.Error(err))
+			xlog.Fatal(ctx, "Unable to push tx", zap.Error(err))
+		}
+		for i := 0; i < len(batch.TxData); i++ {
+			err := batch.TxData[i].CommitTopic()
+			if err != nil {
+				xlog.Fatal(ctx, "Unable to commit topic fot dataTx", zap.Error(err))
+			}
+		}
+		xlog.Debug(ctx, "commit hb in topic")
+		err = batch.Hb.CommitTopic()
+		if err != nil {
+			xlog.Fatal(ctx, "Unable to commit topic fot Hb", zap.Error(err))
 		}
 	}
-
-	//client := db.Table()
-
-	// Perform YDB operation
-	//err = ydb_operations.SomeYdbOperation(ctx, client)
-	//if err != nil {
-	//	xlog.Error(ctx, "ydb operation error", zap.Error(err))
-	//	return
-	//}
-
-	// Create and print a protobuf message
-	//var x protos.SomeMessage
-	//x.Port = 123
-	//s, err := prototext.Marshal(&x)
-	//if err != nil {
-	//	xlog.Error(ctx, "protobuf marshal error", zap.Error(err))
-	//	return
-	//}
-	//xlog.Info(ctx, "protobuf message", zap.String("message", string(s))
 }
