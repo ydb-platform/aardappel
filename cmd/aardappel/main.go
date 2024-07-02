@@ -4,9 +4,7 @@ import (
 	configInit "aardappel/internal/config"
 	"aardappel/internal/dst_table"
 	processor "aardappel/internal/processor"
-	"aardappel/internal/pusher"
 	topicReader "aardappel/internal/reader"
-	"aardappel/internal/types"
 	"aardappel/internal/util/xlog"
 	"context"
 	"flag"
@@ -93,44 +91,9 @@ func main() {
 	}
 
 	for {
-		txDataPerTable := make([][]types.TxData, len(dstTables))
-		batch, err := prc.FormatTx(ctx)
+		err := prc.DoReplication(ctx, dstTables, dstDb.Table())
 		if err != nil {
-			xlog.Fatal(ctx, "Unable to format tx for destination")
-		}
-		for i := 0; i < len(batch.TxData); i++ {
-			txDataPerTable[batch.TxData[i].TableId] = append(txDataPerTable[batch.TxData[i].TableId], batch.TxData[i])
-		}
-		if len(txDataPerTable) != len(dstTables) {
-			xlog.Fatal(ctx, "Size of dstTables and tables in the tx mismatched",
-				zap.Int("txDataPertabe", len(txDataPerTable)),
-				zap.Int("dstTable", len(dstTables)))
-		}
-		var query dst_table.PushQuery
-		for i := 0; i < len(txDataPerTable); i++ {
-			q, err := dstTables[i].GenQuery(ctx, txDataPerTable[i], i)
-			if err != nil {
-				xlog.Fatal(ctx, "Unable to generate query")
-			}
-			query.Query += q.Query
-			query.Parameters = append(query.Parameters, q.Parameters...)
-
-		}
-		xlog.Debug(ctx, "Query to perform", zap.String("query", query.Query))
-		err = pusher.PushAsSingleTx(ctx, dstDb.Table(), query, types.Position{Step: batch.Hb.Step, TxId: 0}, config.StateTable)
-		if err != nil {
-			xlog.Fatal(ctx, "Unable to push tx", zap.Error(err))
-		}
-		for i := 0; i < len(batch.TxData); i++ {
-			err := batch.TxData[i].CommitTopic()
-			if err != nil {
-				xlog.Fatal(ctx, "Unable to commit topic fot dataTx", zap.Error(err))
-			}
-		}
-		xlog.Debug(ctx, "commit hb in topic")
-		err = batch.Hb.CommitTopic()
-		if err != nil {
-			xlog.Fatal(ctx, "Unable to commit topic fot Hb", zap.Error(err))
+			xlog.Fatal(ctx, "Unable to perform replication without error")
 		}
 	}
 }
