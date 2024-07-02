@@ -68,13 +68,6 @@ func ParseTxData(ctx context.Context, jsonData []byte, readerId uint32) (types.T
 	data.Step = txData.TS[0]
 	data.TxId = txData.TS[1]
 
-	//xlog.Debug(ctx, "Parsed tx data",
-	//	zap.Any("column_values", data.ColumnValues),
-	//	zap.String("operation_type", data.OperationType.String()),
-	//	zap.Any("key", data.KeyValues),
-	//	zap.Uint64("step", data.Step),
-	//	zap.Uint64("tx_id", data.TxId))
-
 	return data, nil
 }
 
@@ -95,11 +88,6 @@ func ParseHBData(ctx context.Context, jsonData []byte, streamId types.StreamId) 
 	var data types.HbData
 	data.StreamId = streamId
 	data.Step = resolvedData.Resolved[0]
-
-	//xlog.Debug(ctx, "Parsed hb data",
-	//	zap.Uint64("step", data.Step),
-	//	zap.Int64("partition_id", data.StreamId.PartitionId),
-	//	zap.Uint8("partition_id", data.StreamId.ReaderId))
 
 	return data, nil
 }
@@ -123,7 +111,6 @@ func ReadTopic(ctx context.Context, readerId uint32, reader *topicreader.Reader,
 			xlog.Error(ctx, "Error parsing topic data", zap.Error(err))
 			return
 		}
-		//xlog.Debug(ctx, "xx", zap.Any("xx", topicData))
 		if topicData.Update != nil || topicData.Erase != nil {
 			data, err := ParseTxData(ctx, jsonData, readerId)
 			if err != nil {
