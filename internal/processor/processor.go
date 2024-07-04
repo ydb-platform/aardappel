@@ -74,6 +74,10 @@ func NewProcessor(ctx context.Context, total int, stateTable string, client tabl
 	return &p, err
 }
 
+func (processor *Processor) StartHbGuard(ctx context.Context, timeout uint32, streamDbgInfos []string) {
+	processor.hbTracker.StartHbGuard(ctx, timeout, streamDbgInfos)
+}
+
 func (processor *Processor) EnqueueHb(ctx context.Context, hb types.HbData) {
 	// Skip all before we already processed
 	if hb.Step < processor.lastStep {

@@ -55,6 +55,7 @@ func main() {
 	}
 
 	var totalPartitions int
+	var streamDbgInfos []string
 	for i := 0; i < len(config.Streams); i++ {
 		desc, err := srcDb.Topic().Describe(ctx, config.Streams[i].SrcTopic)
 		if err != nil {
@@ -63,6 +64,7 @@ func main() {
 				zap.Error(err))
 		}
 		totalPartitions += len(desc.Partitions)
+		streamDbgInfos = append(streamDbgInfos, desc.Path)
 	}
 
 	xlog.Debug(ctx, "All topics described",
@@ -71,6 +73,11 @@ func main() {
 	prc, err := processor.NewProcessor(ctx, totalPartitions, config.StateTable, dstDb.Table())
 	if err != nil {
 		xlog.Fatal(ctx, "Unable to create processor", zap.Error(err))
+	}
+
+	if config.MaxExpHbInterval != 0 {
+		xlog.Info(ctx, "start heartbeat tracker guard timer", zap.Uint32("timeout in seconds", config.MaxExpHbInterval))
+		prc.StartHbGuard(ctx, config.MaxExpHbInterval, streamDbgInfos)
 	}
 	var dstTables []*dst_table.DstTable
 	for i := 0; i < len(config.Streams); i++ {

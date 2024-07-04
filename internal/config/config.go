@@ -20,6 +20,7 @@ type Config struct {
 	DstConnectionString string   `yaml:"dst_connection_string"`
 	Streams             []Stream `yaml:"streams"`
 	StateTable          string   `yaml:"state_table"`
+	MaxExpHbInterval    uint32   `yaml:"max_expected_heartbeat_interval"`
 }
 
 func (config Config) ToString() (string, error) {
