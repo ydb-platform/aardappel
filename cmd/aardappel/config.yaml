@@ -10,3 +10,4 @@ streams:
     consumer: "c1"
 
 state_table: "state_table"
+max_expected_heartbeat_interval: 10
