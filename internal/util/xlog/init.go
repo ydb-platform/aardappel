@@ -6,10 +6,13 @@ import (
 	"log"
 )
 
-func SetupLogging(verbose bool) *zap.Logger {
-	var level zapcore.Level = zapcore.WarnLevel
-	if verbose {
-		level = zapcore.DebugLevel
+func SetupLogging(s string) *zap.Logger {
+	if len(s) == 0 {
+		s = "warning"
+	}
+	level, err := zapcore.ParseLevel(s)
+	if err != nil {
+		log.Fatalln("Unable to parse loglevel:", err)
 	}
 	cfg := zap.NewProductionConfig()
 	cfg.Level.SetLevel(level)

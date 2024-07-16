@@ -271,7 +271,7 @@ func GenQueryByTxsType(ctx context.Context, tableMetaInfo TableMetaInfo, txData 
 	updateTxs := make([]types.TxData, 0)
 	eraseTxs := make([]types.TxData, 0)
 	if len(txData) == 0 {
-		xlog.Info(ctx, "list of txs for gen query is empty")
+		xlog.Debug(ctx, "List of txs to generate query is empty")
 		return QueryStatement{}, nil
 	}
 	statementNum := 0
@@ -343,6 +343,7 @@ func GenQuery(ctx context.Context, tableMetaInfo TableMetaInfo, txData []types.T
 	}
 	result.Query = txQuery.Statement
 	result.Parameters = *table.NewQueryParameters(txQuery.Params...)
+	result.ModificationsCount = len(txData)
 	xlog.Debug(ctx, "Gen multi query", zap.String("query", result.Query), zap.String("params", result.Parameters.String()))
 	return result, nil
 }

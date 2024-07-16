@@ -11,8 +11,9 @@ import (
 )
 
 type PushQuery struct {
-	Query      string
-	Parameters table.QueryParameters
+	Query              string
+	Parameters         table.QueryParameters
+	ModificationsCount int
 }
 
 type TableMetaInfo struct {
