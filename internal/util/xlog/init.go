@@ -12,7 +12,7 @@ func SetupLogging(s string) *zap.Logger {
 	}
 	level, err := zapcore.ParseLevel(s)
 	if err != nil {
-		log.Fatalln("Unable to parse loglevel:", err)
+		log.Fatalln("Unable to parse log level:", err)
 	}
 	cfg := zap.NewProductionConfig()
 	cfg.Level.SetLevel(level)
