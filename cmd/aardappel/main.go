@@ -11,6 +11,8 @@ import (
 	"github.com/ydb-platform/ydb-go-sdk/v3"
 	"github.com/ydb-platform/ydb-go-sdk/v3/topic/topicoptions"
 	"go.uber.org/zap"
+	"log"
+	"time"
 )
 
 func main() {
@@ -21,16 +23,17 @@ func main() {
 
 	ctx := context.Background()
 
-	// Setup logging
-	logger := xlog.SetupLogging(true)
-	xlog.SetInternalLogger(logger)
-	defer logger.Sync()
-
 	// Setup config
 	config, err := configInit.InitConfig(ctx, confPath)
 	if err != nil {
-		xlog.Fatal(ctx, "Unable to initialize config", zap.Error(err))
+		log.Fatal(ctx, "Unable to initialize config: ", err)
 	}
+
+	// Setup logging
+	logger := xlog.SetupLogging(config.LogLevel)
+	xlog.SetInternalLogger(logger)
+	defer logger.Sync()
+
 	confStr, err := config.ToString()
 	if err == nil {
 		xlog.Debug(ctx, "Use configuration file",
@@ -98,9 +101,17 @@ func main() {
 	}
 
 	for {
-		err := prc.DoReplication(ctx, dstTables, dstDb.Table())
+		passed := time.Now().UnixMilli()
+		stats, err := prc.DoReplication(ctx, dstTables, dstDb.Table())
 		if err != nil {
 			xlog.Fatal(ctx, "Unable to perform replication without error")
 		}
+		passed = time.Now().UnixMilli() - passed
+		perSecond := float32(stats.ModificationsCount) / (float32(passed) / 1000.0)
+		xlog.Info(ctx, "Replication step ok", zap.Int("modifications", stats.ModificationsCount),
+			zap.Float32("mps", perSecond),
+			zap.Uint64("last quorum HB", stats.LastHeartBeat),
+			zap.Float32("commit duration", float32(stats.CommitDurationMs)/1000),
+			zap.Float32("waitForQuorumDuration", float32(passed-stats.CommitDurationMs)/1000))
 	}
 }

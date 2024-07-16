@@ -21,6 +21,7 @@ type Config struct {
 	Streams             []Stream `yaml:"streams"`
 	StateTable          string   `yaml:"state_table"`
 	MaxExpHbInterval    uint32   `yaml:"max_expected_heartbeat_interval"`
+	LogLevel            string   `yaml:"log_level"`
 }
 
 func (config Config) ToString() (string, error) {

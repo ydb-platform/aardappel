@@ -24,6 +24,12 @@ type Processor struct {
 	stateStoreQuery string
 }
 
+type ReplicationStats struct {
+	ModificationsCount int
+	LastHeartBeat      uint64
+	CommitDurationMs   int64
+}
+
 type Channel interface {
 	EnqueueTx(ctx context.Context, data types.TxData)
 	EnqueueHb(ctx context.Context, heartbeat types.HbData)
@@ -47,7 +53,7 @@ VALUES
 func NewProcessor(ctx context.Context, total int, stateTable string, client table.Client) (*Processor, error) {
 	var p Processor
 	p.hbTracker = hb_tracker.NewHeartBeatTracker(total)
-	p.txChannel = make(chan func() error, 100)
+	p.txChannel = make(chan func() error, 1000)
 	p.txQueue = tx_queue.NewTxQueue()
 	p.dstServerClient = client
 	p.stateStoreQuery = createStateStoreQuery(stateTable)
@@ -80,9 +86,11 @@ func (processor *Processor) StartHbGuard(ctx context.Context, timeout uint32, st
 
 func (processor *Processor) EnqueueHb(ctx context.Context, hb types.HbData) {
 	// Skip all before we already processed
+	xlog.Debug(ctx, "got hb", zap.Uint64("step", hb.Step))
 	if hb.Step < processor.lastStep {
-		_ = hb.CommitTopic()
-		xlog.Debug(ctx, "skip old hb", zap.Uint64("step", hb.Step))
+		err := hb.CommitTopic()
+		xlog.Debug(ctx, "skip old hb",
+			zap.Uint64("step", hb.Step), zap.NamedError("topic commit error", err))
 		return
 	}
 	processor.txChannel <- func() error {
@@ -92,9 +100,12 @@ func (processor *Processor) EnqueueHb(ctx context.Context, hb types.HbData) {
 
 func (processor *Processor) EnqueueTx(ctx context.Context, tx types.TxData) {
 	// Skip all before we already processed
+	xlog.Debug(ctx, "got tx", zap.Uint64("step", tx.Step), zap.Uint64("txId", tx.TxId))
 	if tx.Step < processor.lastStep {
-		_ = tx.CommitTopic()
-		xlog.Debug(ctx, "skip old tx", zap.Uint64("step", tx.Step))
+		err := tx.CommitTopic()
+		xlog.Debug(ctx, "skip old tx",
+			zap.Uint64("step", tx.Step), zap.Uint64("txId", tx.TxId),
+			zap.NamedError("topic commit error", err))
 		return
 	}
 	processor.txChannel <- func() error {
@@ -106,14 +117,14 @@ func (processor *Processor) EnqueueTx(ctx context.Context, tx types.TxData) {
 func (processor *Processor) FormatTx(ctx context.Context) (*TxBatch, error) {
 	var hb types.HbData
 	for {
-		var maxEventPerIteration int = 100
+		var maxEventPerIteration int = 1000
 		for maxEventPerIteration > 0 {
 			maxEventPerIteration--
 			select {
 			case fn := <-processor.txChannel:
 				err := fn()
 				if err != nil {
-					xlog.Debug(ctx, "Unable to push event")
+					xlog.Debug(ctx, "Unable to push event", zap.Error(err))
 					return nil, err
 				}
 			default:
@@ -123,7 +134,7 @@ func (processor *Processor) FormatTx(ctx context.Context) (*TxBatch, error) {
 		var ok bool
 		hb, ok = processor.hbTracker.GetReady()
 		if ok {
-			xlog.Debug(ctx, "Got ready hb ", zap.Any("step", hb.Step))
+			xlog.Debug(ctx, "Got hb quorum", zap.Any("step", hb.Step))
 			break
 		}
 		//TODO: Wait any hb instead of sleep here
@@ -159,45 +170,52 @@ func (processor *Processor) PushAsSingleTx(ctx context.Context, client table.Cli
 		})
 }
 
-func (processor *Processor) DoReplication(ctx context.Context, dstTables []*dst_table.DstTable, dstDb table.Client) error {
+func (processor *Processor) DoReplication(ctx context.Context, dstTables []*dst_table.DstTable, dstDb table.Client) (*ReplicationStats, error) {
 	txDataPerTable := make([][]types.TxData, len(dstTables))
 	batch, err := processor.FormatTx(ctx)
 	if err != nil {
-		return fmt.Errorf("%w; Unable to format tx for destination", err)
+		return nil, fmt.Errorf("%w; Unable to format tx for destination", err)
 	}
 	for i := 0; i < len(batch.TxData); i++ {
 		txDataPerTable[batch.TxData[i].TableId] = append(txDataPerTable[batch.TxData[i].TableId], batch.TxData[i])
 	}
 	if len(txDataPerTable) != len(dstTables) {
-		return fmt.Errorf("Size of dstTables and tables in the tx mismatched",
+		return nil, fmt.Errorf("Size of dstTables and tables in the tx mismatched",
 			zap.Int("txDataPertabe", len(txDataPerTable)),
 			zap.Int("dstTable", len(dstTables)))
 	}
 	var query dst_table.PushQuery
+	var modifications int
 	for i := 0; i < len(txDataPerTable); i++ {
 		q, err := dstTables[i].GenQuery(ctx, txDataPerTable[i], i)
 		if err != nil {
-			return fmt.Errorf("%w; Unable to generate query", err)
+			return nil, fmt.Errorf("%w; Unable to generate query", err)
 		}
 		query.Query += q.Query
+		modifications += q.ModificationsCount
 		query.Parameters = append(query.Parameters, q.Parameters...)
 
 	}
 	xlog.Debug(ctx, "Query to perform", zap.String("query", query.Query))
+	commitDuration := time.Now().UnixMilli()
 	err = processor.PushAsSingleTx(ctx, dstDb, query, types.Position{Step: batch.Hb.Step, TxId: 0})
+	commitDuration = time.Now().UnixMilli() - commitDuration
+
 	if err != nil {
-		return fmt.Errorf("%w; Unable to push tx", err)
+		return nil, fmt.Errorf("%w; Unable to push tx", err)
 	}
 	for i := 0; i < len(batch.TxData); i++ {
 		err := batch.TxData[i].CommitTopic()
 		if err != nil {
-			return fmt.Errorf("%w; Unable to commit topic fot dataTx", err)
+			return nil, fmt.Errorf("%w; Unable to commit topic fot dataTx", err)
 		}
 	}
 	xlog.Debug(ctx, "commit hb in topic")
 	err = batch.Hb.CommitTopic()
 	if err != nil {
-		return fmt.Errorf("%w; Unable to commit topic fot Hb", err)
+		return nil, fmt.Errorf("%w; Unable to commit topic fot hb", err)
 	}
-	return nil
+	return &ReplicationStats{modifications,
+		batch.Hb.Step,
+		commitDuration}, nil
 }
