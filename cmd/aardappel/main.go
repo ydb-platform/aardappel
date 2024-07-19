@@ -23,10 +23,9 @@ func createYdbDriverAuthOptions(oauthFile string, staticToken string) ([]ydb.Opt
 	}
 
 	if len(oauthFile) > 0 {
-		//return []ydb.Option{
-		//	ydb.WithOauth2TokenExchangeCredentialsFile(oauthFile),
-		//}, nil
-		return nil, errors.New("not supported")
+		return []ydb.Option{
+			ydb.WithOauth2TokenExchangeCredentialsFile(oauthFile),
+		}, nil
 	}
 
 	if len(staticToken) > 0 {
