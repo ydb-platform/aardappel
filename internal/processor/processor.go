@@ -86,11 +86,15 @@ func (processor *Processor) StartHbGuard(ctx context.Context, timeout uint32, st
 
 func (processor *Processor) EnqueueHb(ctx context.Context, hb types.HbData) {
 	// Skip all before we already processed
-	xlog.Debug(ctx, "got hb", zap.Uint64("step", hb.Step))
+	xlog.Debug(ctx, "got hb", zap.Uint64("step", hb.Step),
+		zap.Uint32("reader_id", hb.StreamId.ReaderId),
+		zap.Int64("partitionId:", hb.StreamId.PartitionId),
+		zap.Bool("willSkip", hb.Step < processor.lastStep))
 	if hb.Step < processor.lastStep {
 		err := hb.CommitTopic()
 		xlog.Debug(ctx, "skip old hb",
-			zap.Uint64("step", hb.Step), zap.NamedError("topic commit error", err))
+			zap.Uint64("step", hb.Step),
+			zap.NamedError("topic commit error", err))
 		return
 	}
 	processor.txChannel <- func() error {
@@ -100,11 +104,14 @@ func (processor *Processor) EnqueueHb(ctx context.Context, hb types.HbData) {
 
 func (processor *Processor) EnqueueTx(ctx context.Context, tx types.TxData) {
 	// Skip all before we already processed
-	xlog.Debug(ctx, "got tx", zap.Uint64("step", tx.Step), zap.Uint64("txId", tx.TxId))
+	xlog.Debug(ctx, "got tx", zap.Uint64("step", tx.Step),
+		zap.Uint64("txId", tx.TxId),
+		zap.Uint32("reader_id", tx.TableId),
+		zap.Bool("willSkip", tx.Step < processor.lastStep))
 	if tx.Step < processor.lastStep {
 		err := tx.CommitTopic()
 		xlog.Debug(ctx, "skip old tx",
-			zap.Uint64("step", tx.Step), zap.Uint64("txId", tx.TxId),
+			zap.Uint64("step", tx.Step),
 			zap.NamedError("topic commit error", err))
 		return
 	}
@@ -210,7 +217,7 @@ func (processor *Processor) DoReplication(ctx context.Context, dstTables []*dst_
 			return nil, fmt.Errorf("%w; Unable to commit topic fot dataTx", err)
 		}
 	}
-	xlog.Debug(ctx, "commit hb in topic")
+	xlog.Debug(ctx, "commit hb in topic", zap.Uint64("step", batch.Hb.Step))
 	err = batch.Hb.CommitTopic()
 	if err != nil {
 		return nil, fmt.Errorf("%w; Unable to commit topic fot hb", err)

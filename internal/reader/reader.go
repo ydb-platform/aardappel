@@ -11,6 +11,7 @@ import (
 	"github.com/ydb-platform/ydb-go-sdk/v3/topic/topicreader"
 	"go.uber.org/zap"
 	"io"
+	"sync"
 )
 
 type TopicTxData struct {
@@ -93,6 +94,7 @@ func ParseHBData(ctx context.Context, jsonData []byte, streamId types.StreamId) 
 }
 
 func ReadTopic(ctx context.Context, readerId uint32, reader *topicreader.Reader, channel processor.Channel) {
+	var mu sync.Mutex
 	for {
 		msg, err := reader.ReadMessage(ctx)
 		if err != nil {
@@ -118,7 +120,10 @@ func ReadTopic(ctx context.Context, readerId uint32, reader *topicreader.Reader,
 				return
 			}
 			data.CommitTopic = func() error {
-				return reader.Commit(msg.Context(), msg)
+				mu.Lock()
+				ret := reader.Commit(msg.Context(), msg)
+				mu.Unlock()
+				return ret
 			}
 			channel.EnqueueTx(ctx, data)
 			// Add tx to txQueue
@@ -129,7 +134,10 @@ func ReadTopic(ctx context.Context, readerId uint32, reader *topicreader.Reader,
 				return
 			}
 			data.CommitTopic = func() error {
-				return reader.Commit(msg.Context(), msg)
+				mu.Lock()
+				ret := reader.Commit(msg.Context(), msg)
+				mu.Unlock()
+				return ret
 			}
 			channel.EnqueueHb(ctx, data)
 			// Update last hb for partition
