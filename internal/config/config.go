@@ -17,7 +17,13 @@ type Stream struct {
 
 type Config struct {
 	SrcConnectionString string   `yaml:"src_connection_string"`
+	SrcClientBalancer   bool     `yaml:"src_client_balancer"`
+	SrcOAuthFile        string   `yaml:"src_oauth2_file"`
+	SrcStaticToken      string   `yaml:"src_static_token"`
 	DstConnectionString string   `yaml:"dst_connection_string"`
+	DstClientBalancer   bool     `yaml:"dst_client_balancer"`
+	DstOAuthFile        string   `yaml:"dst_oauth2_file"`
+	DstStaticToken      string   `yaml:"dst_static_token"`
 	Streams             []Stream `yaml:"streams"`
 	StateTable          string   `yaml:"state_table"`
 	MaxExpHbInterval    uint32   `yaml:"max_expected_heartbeat_interval"`

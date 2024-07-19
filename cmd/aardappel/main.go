@@ -7,13 +7,34 @@ import (
 	topicReader "aardappel/internal/reader"
 	"aardappel/internal/util/xlog"
 	"context"
+	"errors"
 	"flag"
 	"github.com/ydb-platform/ydb-go-sdk/v3"
+	"github.com/ydb-platform/ydb-go-sdk/v3/balancers"
 	"github.com/ydb-platform/ydb-go-sdk/v3/topic/topicoptions"
 	"go.uber.org/zap"
 	"log"
 	"time"
 )
+
+func createYdbDriverAuthOptions(oauthFile string, staticToken string) ([]ydb.Option, error) {
+	if (len(oauthFile) > 0 && len(staticToken) > 0) || (len(oauthFile) == 0 && len(staticToken) == 0) {
+		return nil, errors.New("it's either oauth2_file or static_token option must be set")
+	}
+
+	if len(oauthFile) > 0 {
+		return []ydb.Option{
+			ydb.WithOauth2TokenExchangeCredentialsFile(oauthFile),
+		}, nil
+	}
+
+	if len(staticToken) > 0 {
+		return []ydb.Option{
+			ydb.WithAccessTokenCredentials(staticToken),
+		}, nil
+	}
+	return nil, errors.New("not supported")
+}
 
 func main() {
 	var confPath string
@@ -41,18 +62,34 @@ func main() {
 			zap.String("config", confStr))
 	}
 
-	opts := []ydb.Option{
-		ydb.WithAccessTokenCredentials("root@builtin"),
+	srcOpts, err := createYdbDriverAuthOptions(config.SrcOAuthFile, config.SrcStaticToken)
+	if err != nil {
+		xlog.Fatal(ctx, "Unable to create auth option for src",
+			zap.Error(err))
+	}
+
+	dstOpts, err := createYdbDriverAuthOptions(config.DstOAuthFile, config.DstStaticToken)
+	if err != nil {
+		xlog.Fatal(ctx, "Unable to create auth option for dst",
+			zap.Error(err))
+	}
+
+	if config.SrcClientBalancer == false {
+		srcOpts = append(srcOpts, ydb.WithBalancer(balancers.SingleConn()))
+	}
+
+	if config.DstClientBalancer == false {
+		dstOpts = append(dstOpts, ydb.WithBalancer(balancers.SingleConn()))
 	}
 
 	// Connect to YDB
-	srcDb, err := ydb.Open(ctx, config.SrcConnectionString, opts...)
+	srcDb, err := ydb.Open(ctx, config.SrcConnectionString, srcOpts...)
 	if err != nil {
 		xlog.Fatal(ctx, "Unable to connect to src cluster", zap.Error(err))
 	}
 	xlog.Debug(ctx, "YDB opened")
 
-	dstDb, err := ydb.Open(ctx, config.DstConnectionString, opts...)
+	dstDb, err := ydb.Open(ctx, config.DstConnectionString, dstOpts...)
 	if err != nil {
 		xlog.Fatal(ctx, "Unable to connect to dst cluster", zap.Error(err))
 	}

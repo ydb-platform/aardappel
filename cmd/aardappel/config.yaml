@@ -1,13 +1,17 @@
 src_connection_string: "grpc://127.0.0.1:28048/Root/test"
+src_client_balancer: false
+#src_oauth2_file: "/path"
+src_static_token: "root@builtin"
 dst_connection_string: "grpc://127.0.0.1:28048/Root/test"
+dst_client_balancer: false
+#dst_oauth2_file: "/path"
+dst_static_token: "root@builtin"
 
 streams:
   - src_topic: "producer1/cf1"
     dst_table: "/Root/test/table1_rep"
     consumer: "c1"
-  - src_topic: "producer2/cf2"
-    dst_table: "/Root/test/table2_rep"
-    consumer: "c1"
 
 state_table: "state_table"
 max_expected_heartbeat_interval: 10
+log_level: "debug"
