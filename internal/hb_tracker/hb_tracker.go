@@ -88,7 +88,8 @@ func (ht *HeartBeatTracker) AddHb(data types.HbData) error {
 			// Got new heartbeat for stream - we can commit previous one
 			err := hb.CommitTopic()
 			if err != nil {
-				return err
+				return fmt.Errorf("unable to commit topic during update HB %w, stepId: %d", err,
+					hb.Step)
 			}
 			hb = data
 		}
