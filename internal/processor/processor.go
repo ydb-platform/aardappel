@@ -102,7 +102,7 @@ func (processor *Processor) EnqueueHb(ctx context.Context, hb types.HbData) {
 	processor.txChannel <- func() error {
 		step := processor.lastStep.Load()
 		if hb.Step < step {
-			xlog.Warn(ctx, "suspicious behaviour, hb with step less then our last committed step has been"+
+			xlog.Warn(ctx, "suspicious behaviour, hb with step less then our last committed step has been "+
 				"enqueued just during our commit",
 				zap.Uint64("step", hb.Step),
 				zap.Uint64("ourStep", step))
