@@ -8,7 +8,7 @@ import (
 
 func SetupLogging(s string) *zap.Logger {
 	if len(s) == 0 {
-		s = "warning"
+		s = "warn"
 	}
 	level, err := zapcore.ParseLevel(s)
 	if err != nil {
