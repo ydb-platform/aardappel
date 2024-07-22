@@ -12,6 +12,7 @@ import (
 	"github.com/ydb-platform/ydb-go-sdk/v3/table/result/named"
 	ydbTypes "github.com/ydb-platform/ydb-go-sdk/v3/table/types"
 	"go.uber.org/zap"
+	"sync/atomic"
 	"time"
 )
 
@@ -20,7 +21,7 @@ type Processor struct {
 	hbTracker       *hb_tracker.HeartBeatTracker
 	txQueue         *tx_queue.TxQueue
 	dstServerClient table.Client
-	lastStep        uint64
+	lastStep        atomic.Uint64
 	stateStoreQuery string
 }
 
@@ -75,8 +76,8 @@ func NewProcessor(ctx context.Context, total int, stateTable string, client tabl
 	if err != nil {
 		return nil, err
 	}
-	p.lastStep = *step
-	xlog.Debug(ctx, "processor created", zap.Uint64("last step", p.lastStep))
+	p.lastStep.Store(*step)
+	xlog.Debug(ctx, "processor created", zap.Uint64("last step", *step))
 	return &p, err
 }
 
@@ -86,11 +87,12 @@ func (processor *Processor) StartHbGuard(ctx context.Context, timeout uint32, st
 
 func (processor *Processor) EnqueueHb(ctx context.Context, hb types.HbData) {
 	// Skip all before we already processed
+	lastStep := processor.lastStep.Load()
 	xlog.Debug(ctx, "got hb", zap.Uint64("step", hb.Step),
 		zap.Uint32("reader_id", hb.StreamId.ReaderId),
 		zap.Int64("partitionId:", hb.StreamId.PartitionId),
-		zap.Bool("willSkip", hb.Step < processor.lastStep))
-	if hb.Step < processor.lastStep {
+		zap.Bool("willSkip", hb.Step < lastStep))
+	if hb.Step < lastStep {
 		err := hb.CommitTopic()
 		xlog.Debug(ctx, "skip old hb",
 			zap.Uint64("step", hb.Step),
@@ -98,17 +100,26 @@ func (processor *Processor) EnqueueHb(ctx context.Context, hb types.HbData) {
 		return
 	}
 	processor.txChannel <- func() error {
+		step := processor.lastStep.Load()
+		if hb.Step < step {
+			xlog.Warn(ctx, "suspicious behaviour, hb with step less then our last committed step has been"+
+				"enqueued just during our commit",
+				zap.Uint64("step", hb.Step),
+				zap.Uint64("ourStep", step))
+			return nil
+		}
 		return processor.hbTracker.AddHb(hb)
 	}
 }
 
 func (processor *Processor) EnqueueTx(ctx context.Context, tx types.TxData) {
 	// Skip all before we already processed
+	lastStep := processor.lastStep.Load()
 	xlog.Debug(ctx, "got tx", zap.Uint64("step", tx.Step),
 		zap.Uint64("txId", tx.TxId),
 		zap.Uint32("reader_id", tx.TableId),
-		zap.Bool("willSkip", tx.Step < processor.lastStep))
-	if tx.Step < processor.lastStep {
+		zap.Bool("willSkip", tx.Step < lastStep))
+	if tx.Step < lastStep {
 		err := tx.CommitTopic()
 		xlog.Debug(ctx, "skip old tx",
 			zap.Uint64("step", tx.Step),
@@ -116,6 +127,14 @@ func (processor *Processor) EnqueueTx(ctx context.Context, tx types.TxData) {
 		return
 	}
 	processor.txChannel <- func() error {
+		step := processor.lastStep.Load()
+		if tx.Step < step {
+			xlog.Warn(ctx, "suspicious behaviour, tx with step less then our last committed step has been"+
+				"enqueued just during our commit",
+				zap.Uint64("step", tx.Step),
+				zap.Uint64("ourStep", step))
+			return nil
+		}
 		processor.txQueue.PushTx(tx)
 		return nil
 	}
@@ -211,12 +230,16 @@ func (processor *Processor) DoReplication(ctx context.Context, dstTables []*dst_
 	if err != nil {
 		return nil, fmt.Errorf("%w; Unable to push tx", err)
 	}
+
+	processor.lastStep.Store(batch.Hb.Step)
+
 	for i := 0; i < len(batch.TxData); i++ {
 		err := batch.TxData[i].CommitTopic()
 		if err != nil {
 			return nil, fmt.Errorf("%w; Unable to commit topic fot dataTx", err)
 		}
 	}
+
 	xlog.Debug(ctx, "commit hb in topic", zap.Uint64("step", batch.Hb.Step))
 	err = batch.Hb.CommitTopic()
 	if err != nil {
