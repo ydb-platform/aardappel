@@ -95,6 +95,15 @@ func ParseHBData(ctx context.Context, jsonData []byte, streamId types.StreamId) 
 
 func ReadTopic(ctx context.Context, readerId uint32, reader *topicreader.Reader, channel processor.Channel) {
 	var mu sync.Mutex
+	lastHb := make(map[int64]uint64)
+	verifyStream := func(part int64, id uint64) {
+		hb := lastHb[part]
+		if hb != 0 && id < hb {
+			xlog.Fatal(ctx, "Unexpected step_id in stream",
+				zap.Uint64("last hb step_id", lastHb[part]),
+				zap.Uint64("got tx step_id", id))
+		}
+	}
 	for {
 		msg, err := reader.ReadMessage(ctx)
 		if err != nil {
@@ -119,6 +128,7 @@ func ReadTopic(ctx context.Context, readerId uint32, reader *topicreader.Reader,
 				xlog.Error(ctx, "ParseTxData: Error parsing tx data", zap.Error(err))
 				return
 			}
+			verifyStream(msg.PartitionID(), data.Step)
 			data.CommitTopic = func() error {
 				mu.Lock()
 				ret := reader.Commit(msg.Context(), msg)
@@ -133,6 +143,7 @@ func ReadTopic(ctx context.Context, readerId uint32, reader *topicreader.Reader,
 				xlog.Error(ctx, "ParseTxData: Error parsing hb data", zap.Error(err))
 				return
 			}
+			lastHb[msg.PartitionID()] = data.Step
 			data.CommitTopic = func() error {
 				mu.Lock()
 				ret := reader.Commit(msg.Context(), msg)
