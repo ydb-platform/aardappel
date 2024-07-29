@@ -98,7 +98,7 @@ func ReadTopic(ctx context.Context, readerId uint32, reader *topicreader.Reader,
 	lastHb := make(map[int64]uint64)
 	verifyStream := func(part int64, id uint64) {
 		hb := lastHb[part]
-		if hb != 0 && id < hb { //TODO it should be <= here
+		if hb != 0 && id < hb {
 			xlog.Fatal(ctx, "Unexpected step_id in stream",
 				zap.Uint64("last hb step_id", lastHb[part]),
 				zap.Uint64("got tx step_id", id))
