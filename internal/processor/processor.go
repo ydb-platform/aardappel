@@ -8,6 +8,8 @@ import (
 	"aardappel/internal/util/xlog"
 	"context"
 	"fmt"
+	"github.com/ydb-platform/ydb-go-genproto/protos/Ydb"
+	"github.com/ydb-platform/ydb-go-sdk/v3"
 	"github.com/ydb-platform/ydb-go-sdk/v3/table"
 	"github.com/ydb-platform/ydb-go-sdk/v3/table/result/named"
 	ydbTypes "github.com/ydb-platform/ydb-go-sdk/v3/table/types"
@@ -51,17 +53,10 @@ VALUES
 `, stateTable)
 }
 
-func NewProcessor(ctx context.Context, total int, stateTable string, client table.Client) (*Processor, error) {
-	var p Processor
-	p.hbTracker = hb_tracker.NewHeartBeatTracker(total)
-	p.txChannel = make(chan func() error, 1000)
-	p.txQueue = tx_queue.NewTxQueue()
-	p.dstServerClient = client
-	p.stateStoreQuery = createStateStoreQuery(stateTable)
-
+func selectReplicationPos(ctx context.Context, client table.Client, stateTable string) (uint64, error) {
 	stateQuery := fmt.Sprintf("SELECT step_id FROM %v WHERE id = 0;", stateTable)
 	var step *uint64
-	err := p.dstServerClient.DoTx(ctx,
+	err := client.DoTx(ctx,
 		func(ctx context.Context, tx table.TransactionActor) error {
 			res, err := tx.Execute(ctx, stateQuery, nil)
 			if err != nil {
@@ -74,10 +69,56 @@ func NewProcessor(ctx context.Context, total int, stateTable string, client tabl
 			)
 		})
 	if err != nil {
-		return nil, err
+		return 0, err
 	}
-	p.lastStep.Store(*step)
-	xlog.Debug(ctx, "processor created", zap.Uint64("last step", *step))
+	return *step, err
+}
+
+func createReplicaStateTable(ctx context.Context, client table.Client, stateTable string) error {
+	query := fmt.Sprintf("CREATE TABLE %v (id Uint32, step_id Uint64, tx_id Uint64, PRIMARY KEY(id))", stateTable)
+	err := client.Do(ctx,
+		func(ctx context.Context, s table.Session) error {
+			return s.ExecuteSchemeQuery(ctx, query, nil)
+		})
+
+	if err != nil {
+		return err
+	}
+
+	initQuery := fmt.Sprintf("UPSERT INTO %v (id, step_id, tx_id) VALUES (0,0,0)", stateTable)
+	return client.DoTx(ctx,
+		func(ctx context.Context, tx table.TransactionActor) error {
+			_, err := tx.Execute(ctx, initQuery, nil)
+			return err
+		})
+}
+
+func NewProcessor(ctx context.Context, total int, stateTable string, client table.Client) (*Processor, error) {
+	var p Processor
+	p.hbTracker = hb_tracker.NewHeartBeatTracker(total)
+	p.txChannel = make(chan func() error, 1000)
+	p.txQueue = tx_queue.NewTxQueue()
+	p.dstServerClient = client
+	p.stateStoreQuery = createStateStoreQuery(stateTable)
+
+	step, err := selectReplicationPos(ctx, p.dstServerClient, stateTable)
+	if err != nil {
+		if ydb.IsOperationError(err, Ydb.StatusIds_SCHEME_ERROR) {
+			err = createReplicaStateTable(ctx, p.dstServerClient, stateTable)
+			if err != nil {
+				return nil, err
+			}
+
+			step, err = selectReplicationPos(ctx, p.dstServerClient, stateTable)
+			if err != nil {
+				return nil, err
+			}
+		} else {
+			return nil, err
+		}
+	}
+	p.lastStep.Store(step)
+	xlog.Debug(ctx, "processor created", zap.Uint64("last step", step))
 	return &p, err
 }
 
