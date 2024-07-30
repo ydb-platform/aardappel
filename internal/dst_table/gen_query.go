@@ -9,6 +9,7 @@ import (
 	"github.com/ydb-platform/ydb-go-sdk/v3/table"
 	ydb_types "github.com/ydb-platform/ydb-go-sdk/v3/table/types"
 	"go.uber.org/zap"
+	"sort"
 )
 
 type QueryStatement struct {
@@ -267,69 +268,80 @@ func GenQueryFromEraseTx(ctx context.Context, tableMetaInfo TableMetaInfo, txDat
 }
 
 func GenQueryByTxsType(ctx context.Context, tableMetaInfo TableMetaInfo, txData []types.TxData, globalStatementNum int) (QueryStatement, error) {
-	result := NewQueryStatement()
-	updateTxs := make([]types.TxData, 0)
-	eraseTxs := make([]types.TxData, 0)
 	if len(txData) == 0 {
 		xlog.Debug(ctx, "List of txs to generate query is empty")
 		return QueryStatement{}, nil
 	}
-	statementNum := 0
-	lastTxIsUpdate := txData[0].IsUpdateOperation()
+
+	upsertResult := make(map[string]types.TxData)
+	deleteResult := make(map[string]types.TxData)
+
+	serializeKey := func(key []json.RawMessage) string {
+		data, err := json.Marshal(key)
+		if err != nil {
+			panic(err)
+		}
+		return string(data)
+	}
+
 	for i := range txData {
+		txKey := serializeKey(txData[i].KeyValues)
 		if txData[i].IsUpdateOperation() {
-			updateTxs = append(updateTxs, txData[i])
-			if !lastTxIsUpdate {
-				txQuery, err := GenQueryFromEraseTx(ctx, tableMetaInfo, eraseTxs, statementNum, globalStatementNum)
-				statementNum++
-				if err != nil {
-					xlog.Error(ctx, "error in gen query for erase txs", zap.Error(err))
-					return QueryStatement{}, fmt.Errorf("GenQuery: %w", err)
-				}
-				result.Statement += txQuery.Statement
-				result.Params = append(result.Params, txQuery.Params...)
-				eraseTxs = eraseTxs[:0]
+			_, ok := deleteResult[txKey]
+			if ok {
+				delete(deleteResult, txKey)
 			}
-			lastTxIsUpdate = true
+			upsertResult[txKey] = txData[i]
 			continue
 		}
 		if txData[i].IsEraseOperation() {
-			eraseTxs = append(eraseTxs, txData[i])
-			if lastTxIsUpdate {
-				txQuery, err := GenQueryFromUpdateTx(ctx, tableMetaInfo, updateTxs, statementNum, globalStatementNum)
-				statementNum++
-				if err != nil {
-					xlog.Error(ctx, "error in gen query for update txs", zap.Error(err))
-					return QueryStatement{}, fmt.Errorf("GenQuery: %w", err)
-				}
-				result.Statement += txQuery.Statement
-				result.Params = append(result.Params, txQuery.Params...)
-				updateTxs = updateTxs[:0]
+			_, ok := upsertResult[txKey]
+			if ok {
+				delete(upsertResult, txKey)
 			}
-			lastTxIsUpdate = false
+			deleteResult[txKey] = txData[i]
 			continue
 		}
 		return QueryStatement{}, fmt.Errorf("GenQuery: unknown tx operation type")
 	}
 
-	if len(updateTxs) > 0 {
-		txQuery, err := GenQueryFromUpdateTx(ctx, tableMetaInfo, updateTxs, statementNum, globalStatementNum)
-		if err != nil {
-			xlog.Error(ctx, "error in gen query for update txs", zap.Error(err))
-			return QueryStatement{}, fmt.Errorf("GenQuery: %w", err)
-		}
-		result.Statement += txQuery.Statement
-		result.Params = append(result.Params, txQuery.Params...)
+	upsertKeys := make([]string, 0, len(upsertResult))
+	for key := range upsertResult {
+		upsertKeys = append(upsertKeys, key)
 	}
-	if len(eraseTxs) > 0 {
-		txQuery, err := GenQueryFromEraseTx(ctx, tableMetaInfo, eraseTxs, statementNum, globalStatementNum)
-		if err != nil {
-			xlog.Error(ctx, "error in gen query for erase txs", zap.Error(err))
-			return QueryStatement{}, fmt.Errorf("GenQuery: %w", err)
-		}
-		result.Statement += txQuery.Statement
-		result.Params = append(result.Params, txQuery.Params...)
+	deleteKeys := make([]string, 0, len(deleteResult))
+	for key := range deleteResult {
+		deleteKeys = append(deleteKeys, key)
 	}
+	sort.Strings(upsertKeys)
+	sort.Strings(deleteKeys)
+
+	upsertTxs := make([]types.TxData, 0, len(upsertResult))
+	deleteTxs := make([]types.TxData, 0, len(deleteResult))
+	for _, key := range upsertKeys {
+		upsertTxs = append(upsertTxs, upsertResult[key])
+	}
+	for _, key := range deleteKeys {
+		deleteTxs = append(deleteTxs, deleteResult[key])
+	}
+
+	result := NewQueryStatement()
+
+	upsertTxQuery, err := GenQueryFromUpdateTx(ctx, tableMetaInfo, upsertTxs, 0, globalStatementNum)
+	if err != nil {
+		xlog.Error(ctx, "error in gen query for upsert txs", zap.Error(err))
+		return QueryStatement{}, fmt.Errorf("GenQuery: %w", err)
+	}
+	result.Statement += upsertTxQuery.Statement
+	result.Params = append(result.Params, upsertTxQuery.Params...)
+
+	deleteTxQuery, err := GenQueryFromEraseTx(ctx, tableMetaInfo, deleteTxs, 1, globalStatementNum)
+	if err != nil {
+		xlog.Error(ctx, "error in gen query for erase txs", zap.Error(err))
+		return QueryStatement{}, fmt.Errorf("GenQuery: %w", err)
+	}
+	result.Statement += deleteTxQuery.Statement
+	result.Params = append(result.Params, deleteTxQuery.Params...)
 
 	return *result, nil
 }
