@@ -7,6 +7,7 @@ import (
 	"aardappel/internal/util/xlog"
 	"context"
 	"encoding/json"
+	"fmt"
 	"github.com/ydb-platform/ydb-go-sdk/v3/topic/topicreader"
 	"go.uber.org/zap"
 	"io"
@@ -25,9 +26,15 @@ func ReadTopic(ctx context.Context, readerId uint32, reader *topicreader.Reader,
 	verifyStream := func(part int64, id uint64) {
 		hb := lastHb[part]
 		if hb != 0 && id < hb {
-			xlog.Fatal(ctx, "Unexpected step_id in stream",
-				zap.Uint64("last hb step_id", lastHb[part]),
-				zap.Uint64("got tx step_id", id))
+			errString := fmt.Sprintf("Unexpected step_id in stream, last hb step_id: %v, got tx step_id: %v",
+				lastHb[part], id)
+			stopErr := channel.SaveReplicationStatus(ctx, processor.REPLICATION_FATAL_ERROR, errString)
+			if stopErr != nil {
+				xlog.Fatal(ctx, errString,
+					zap.NamedError("this issue was not stored in the state table due to double error", stopErr))
+			} else {
+				xlog.Fatal(ctx, errString)
+			}
 		}
 	}
 	for {
