@@ -139,7 +139,7 @@ func main() {
 
 	for {
 		passed := time.Now().UnixMilli()
-		stats, err := prc.DoReplication(ctx, dstTables, dstDb.Table())
+		stats, err := prc.DoReplication(ctx, dstTables)
 		if err != nil {
 			xlog.Fatal(ctx, "Unable to perform replication without error")
 		}

@@ -256,21 +256,21 @@ func (processor *Processor) FormatTx(ctx context.Context) (*TxBatch, error) {
 	return &TxBatch{TxData: txs, Hb: hb}, nil
 }
 
-func (processor *Processor) PushAsSingleTx(ctx context.Context, client table.Client, data dst_table.PushQuery, position types.Position) error {
+func (processor *Processor) PushAsSingleTx(ctx context.Context, data dst_table.PushQuery, position types.Position) error {
 	stateParam := table.NewQueryParameters(
 		table.ValueParam("$stateStepId", ydbTypes.Uint64Value(position.Step)),
 		table.ValueParam("$stateTxId", ydbTypes.Uint64Value(position.TxId)),
 	)
 	param := append(data.Parameters, *stateParam...)
 
-	return client.DoTx(ctx,
+	return processor.dstServerClient.DoTx(ctx,
 		func(ctx context.Context, tx table.TransactionActor) error {
 			_, err := tx.Execute(ctx, data.Query+processor.stateStoreQuery, &param)
 			return err
 		})
 }
 
-func (processor *Processor) DoReplication(ctx context.Context, dstTables []*dst_table.DstTable, dstDb table.Client) (*ReplicationStats, error) {
+func (processor *Processor) DoReplication(ctx context.Context, dstTables []*dst_table.DstTable) (*ReplicationStats, error) {
 	txDataPerTable := make([][]types.TxData, len(dstTables))
 	batch, err := processor.FormatTx(ctx)
 	if err != nil {
@@ -298,7 +298,7 @@ func (processor *Processor) DoReplication(ctx context.Context, dstTables []*dst_
 	}
 	xlog.Debug(ctx, "Query to perform", zap.String("query", query.Query))
 	commitDuration := time.Now().UnixMilli()
-	err = processor.PushAsSingleTx(ctx, dstDb, query, types.Position{Step: batch.Hb.Step, TxId: 0})
+	err = processor.PushAsSingleTx(ctx, query, types.Position{Step: batch.Hb.Step, TxId: 0})
 	commitDuration = time.Now().UnixMilli() - commitDuration
 
 	if err != nil {
