@@ -40,7 +40,7 @@ type ReplicationStats struct {
 type Channel interface {
 	EnqueueTx(ctx context.Context, data types.TxData)
 	EnqueueHb(ctx context.Context, heartbeat types.HbData)
-	StopReplication(ctx context.Context, lastError string) error
+	SaveReplicationStatus(ctx context.Context, status uint16, lastError string) error
 }
 
 type TxBatch struct {
@@ -172,12 +172,12 @@ func (processor *Processor) EnqueueHb(ctx context.Context, hb types.HbData) {
 	}
 }
 
-func (processor *Processor) StopReplication(ctx context.Context, lastError string) error {
+func (processor *Processor) SaveReplicationStatus(ctx context.Context, status uint16, lastError string) error {
 	param := table.NewQueryParameters(
 		table.ValueParam("$last_error", ydbTypes.UTF8Value(lastError)),
 	)
 	stopQuery := fmt.Sprintf("UPSERT INTO %v (id, status_id, last_error) VALUES (0,%v,$last_error)",
-		processor.stateTable, REPLICATION_FATAL_ERROR)
+		processor.stateTable, status)
 
 	return processor.dstServerClient.DoTx(ctx,
 		func(ctx context.Context, tx table.TransactionActor) error {

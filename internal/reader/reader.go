@@ -28,7 +28,7 @@ func ReadTopic(ctx context.Context, readerId uint32, reader *topicreader.Reader,
 		if hb != 0 && id < hb {
 			errString := fmt.Sprintf("Unexpected step_id in stream, last hb step_id: %v, got tx step_id: %v",
 				lastHb[part], id)
-			stopErr := channel.StopReplication(ctx, errString)
+			stopErr := channel.SaveReplicationStatus(ctx, processor.REPLICATION_FATAL_ERROR, errString)
 			if stopErr != nil {
 				xlog.Fatal(ctx, errString,
 					zap.NamedError("this issue was not stored in the state table due to double error", stopErr))
