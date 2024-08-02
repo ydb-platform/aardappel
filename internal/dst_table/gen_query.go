@@ -326,22 +326,28 @@ func GenQueryByTxsType(ctx context.Context, tableMetaInfo TableMetaInfo, txData 
 	}
 
 	result := NewQueryStatement()
+	localStatementNum := 0
 
-	upsertTxQuery, err := GenQueryFromUpdateTx(ctx, tableMetaInfo, upsertTxs, 0, globalStatementNum)
-	if err != nil {
-		xlog.Error(ctx, "error in gen query for upsert txs", zap.Error(err))
-		return QueryStatement{}, fmt.Errorf("GenQuery: %w", err)
+	if len(upsertTxs) > 0 {
+		upsertTxQuery, err := GenQueryFromUpdateTx(ctx, tableMetaInfo, upsertTxs, localStatementNum, globalStatementNum)
+		if err != nil {
+			xlog.Error(ctx, "error in gen query for upsert txs", zap.Error(err))
+			return QueryStatement{}, fmt.Errorf("GenQuery: %w", err)
+		}
+		result.Statement += upsertTxQuery.Statement
+		result.Params = append(result.Params, upsertTxQuery.Params...)
+		localStatementNum++
 	}
-	result.Statement += upsertTxQuery.Statement
-	result.Params = append(result.Params, upsertTxQuery.Params...)
 
-	deleteTxQuery, err := GenQueryFromEraseTx(ctx, tableMetaInfo, deleteTxs, 1, globalStatementNum)
-	if err != nil {
-		xlog.Error(ctx, "error in gen query for erase txs", zap.Error(err))
-		return QueryStatement{}, fmt.Errorf("GenQuery: %w", err)
+	if len(deleteTxs) > 0 {
+		deleteTxQuery, err := GenQueryFromEraseTx(ctx, tableMetaInfo, deleteTxs, localStatementNum, globalStatementNum)
+		if err != nil {
+			xlog.Error(ctx, "error in gen query for erase txs", zap.Error(err))
+			return QueryStatement{}, fmt.Errorf("GenQuery: %w", err)
+		}
+		result.Statement += deleteTxQuery.Statement
+		result.Params = append(result.Params, deleteTxQuery.Params...)
 	}
-	result.Statement += deleteTxQuery.Statement
-	result.Params = append(result.Params, deleteTxQuery.Params...)
 
 	return *result, nil
 }

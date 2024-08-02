@@ -95,3 +95,41 @@ func TestGenQuery(t *testing.T) {
 		"]}"
 	assert.Equal(t, expectedParams, query.Parameters.String())
 }
+
+func TestGenOnlyUpsertQuery(t *testing.T) {
+	ctx := context.Background()
+	txData1, _ := reader.ParseTxData(ctx, []byte("{\"update\":{\"value1\":\"15\", \"value2\":18446744073709551615, \"value3\":1.00000009, \"value4\":null},\"key\":[15,\"15\"],\"ts\":[18446744073709551615,18446744073709551615]}"), 0)
+	txData2, _ := reader.ParseTxData(ctx, []byte("{\"update\":{\"value1\":\"16\", \"value3\":1.00000009},\"key\":[16,\"16\"],\"ts\":[18446744073709551614,18446744073709551614]}"), 0)
+	txData3, _ := reader.ParseTxData(ctx, []byte("{\"update\":{\"value1\":\"17\", \"value3\":1.00000009},\"key\":[17,\"17\"],\"ts\":[18446744073709551614,18446744073709551614]}"), 0)
+	txData4, _ := reader.ParseTxData(ctx, []byte("{\"update\":{\"value1\":\"19\", \"value3\":1.00000009},\"key\":[19,\"19\"],\"ts\":[18446744073709551613,18446744073709551613]}"), 0)
+	txData5, _ := reader.ParseTxData(ctx, []byte("{\"update\":{\"value1\":\"27\", \"value3\":1.00000009},\"key\":[17,\"17\"],\"ts\":[18446744073709551613,18446744073709551613]}"), 0)
+	query, err := GenQuery(ctx, GetTestTableMetaInfo(), []types.TxData{txData1, txData2, txData3, txData4, txData5}, 0)
+	require.Nil(t, err)
+	expectedResult := "UPSERT INTO path SELECT * FROM AS_TABLE($p_0_0);\n"
+	assert.Equal(t, expectedResult, query.Query)
+	expectedParams := "{\"$p_0_0\":" +
+		"[" +
+		"<|`key1`:15,`key2`:\"15\",`value1`:\"15\",`value2`:18446744073709551615ul,`value3`:Just(Double(\"1.00000009\")),`value4`:Nothing(Optional<String>)|>," +
+		"<|`key1`:16,`key2`:\"16\",`value1`:\"16\",`value3`:Just(Double(\"1.00000009\"))|>," +
+		"<|`key1`:17,`key2`:\"17\",`value1`:\"27\",`value3`:Just(Double(\"1.00000009\"))|>," +
+		"<|`key1`:19,`key2`:\"19\",`value1`:\"19\",`value3`:Just(Double(\"1.00000009\"))|>" +
+		"]}"
+	assert.Equal(t, expectedParams, query.Parameters.String())
+}
+
+func TestGenOnlyEraseQuery(t *testing.T) {
+	ctx := context.Background()
+	txData1, _ := reader.ParseTxData(ctx, []byte("{\"erase\":{},\"key\":[16,\"16\"],\"ts\":[18446744073709551615,18446744073709551615]}"), 0)
+	txData2, _ := reader.ParseTxData(ctx, []byte("{\"erase\":{},\"key\":[17,\"17\"],\"ts\":[18446744073709551614,18446744073709551614]}"), 0)
+	txData3, _ := reader.ParseTxData(ctx, []byte("{\"erase\":{},\"key\":[16,\"16\"],\"ts\":[18446744073709551614,18446744073709551614]}"), 0)
+	query, err := GenQuery(ctx, GetTestTableMetaInfo(), []types.TxData{txData1, txData2, txData3}, 0)
+	require.Nil(t, err)
+	expectedResult := "DELETE FROM path ON SELECT * FROM AS_TABLE($p_0_0);\n"
+	assert.Equal(t, expectedResult, query.Query)
+	expectedParams := "{\"$p_0_0\":" +
+		"[" +
+		"<|`key1`:16,`key2`:\"16\"|>," +
+		"<|`key1`:17,`key2`:\"17\"|>" +
+		"]}"
+	assert.Equal(t, expectedParams, query.Parameters.String())
+}
