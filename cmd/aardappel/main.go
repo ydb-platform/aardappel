@@ -141,7 +141,7 @@ func main() {
 		passed := time.Now().UnixMilli()
 		stats, err := prc.DoReplication(ctx, dstTables)
 		if err != nil {
-			xlog.Fatal(ctx, "Unable to perform replication without error")
+			xlog.Fatal(ctx, "Unable to perform replication without error", zap.Error(err))
 		}
 		passed = time.Now().UnixMilli() - passed
 		perSecond := float32(stats.ModificationsCount) / (float32(passed) / 1000.0)
