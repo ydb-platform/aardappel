@@ -26,7 +26,7 @@ streams:
     ## Topic consumer name
     consumer: "c1"
 
-## Ttate table name, aardappel will save internal state in this table
+## The table name, aardappel will save internal state in this table
 ## the table will be created if absent.
 state_table: "state_table10"
 
