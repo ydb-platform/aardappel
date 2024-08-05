@@ -1,8 +1,8 @@
-## connection string to the source cluster,
+## Connection string to the source cluster,
 ## example: grpcs://shared-1-grpc.ydb-global.svc.cluster.local:2135/testing-global/aardappel-test
 src_connection_string: "grpc://127.0.0.1:28048/Root/test"
 
-## Whether aardappel use client balancer or not
+## Whether aardappel use client balancer or not.
 src_client_balancer: false
 
 ## Authorizatrion one of:
@@ -10,29 +10,29 @@ src_client_balancer: false
 ##   src_static_token - YDB static token
 src_static_token: "root@builtin"
 
-## same params for destination cluster
+## Same params for destination cluster
 dst_connection_string: "grpc://127.0.0.1:28048/Root/test"
 dst_client_balancer: false
 dst_static_token: "root@builtin"
 
-## the following section describe replication streams
+## The following section describe replication streams
 ## all src and dst entity described here will be replicated using
 ## heartbeat mechanism. So destination database will have consistent state.
 streams:
-  ## path to src topic
+  ## Path to src topic
   - src_topic: "producer1/cf1"
-    ## path to dst table
+    ## Path to dst table
     dst_table: "/Root/test/table1_rep"
-    ## topic consumer name
+    ## Topic consumer name
     consumer: "c1"
 
-## state table name, aardappel will save internal state in this table
-## the table will be created if absent
+## Ttate table name, aardappel will save internal state in this table
+## the table will be created if absent.
 state_table: "state_table10"
 
-## max timeout to analise missed heartbeat. If we don't get quorum during this interval
-## the warning message will be written to the log
+## Max timeout to analise missed heartbeat. If we don't get quorum during this interval
+## the warning message will be written to the log.
 max_expected_heartbeat_interval: 10
 
-## log level
+## Log level
 log_level: "debug"
