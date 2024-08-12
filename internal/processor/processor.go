@@ -7,6 +7,7 @@ import (
 	"aardappel/internal/types"
 	"aardappel/internal/util/xlog"
 	"context"
+	"errors"
 	"fmt"
 	"github.com/ydb-platform/ydb-go-genproto/protos/Ydb"
 	"github.com/ydb-platform/ydb-go-sdk/v3"
@@ -29,6 +30,7 @@ type Processor struct {
 	lastStep        atomic.Uint64
 	stateStoreQuery string
 	stateTable      string
+	instanceId      string
 }
 
 type ReplicationStats struct {
@@ -58,9 +60,17 @@ VALUES
 `, stateTable)
 }
 
-func selectReplicationPos(ctx context.Context, client table.Client, stateTable string) (uint64, error) {
+type NoInstance struct {
+	instanceId string
+}
+
+func (e *NoInstance) Error() string {
+	return "No instance id found" + e.instanceId
+}
+
+func selectReplicationPos(ctx context.Context, client table.Client, stateTable string, instanceId string) (uint64, error) {
 	param := table.NewQueryParameters(
-		table.ValueParam("$instanceId", ydbTypes.UTF8Value("0")),
+		table.ValueParam("$instanceId", ydbTypes.UTF8Value(instanceId)),
 	)
 	stateQuery := fmt.Sprintf("SELECT step_id, state, last_msg FROM %v WHERE id = $instanceId;", stateTable)
 	var step *uint64
@@ -73,7 +83,9 @@ func selectReplicationPos(ctx context.Context, client table.Client, stateTable s
 				return err
 			}
 			res.NextResultSet(ctx)
-			res.NextRow()
+			if res.NextRow() == false {
+				return &NoInstance{instanceId}
+			}
 			return res.ScanNamed(
 				named.Optional("step_id", &step),
 				named.Optional("state", &state),
@@ -93,7 +105,7 @@ func selectReplicationPos(ctx context.Context, client table.Client, stateTable s
 	return *step, err
 }
 
-func createReplicaStateTable(ctx context.Context, client table.Client, stateTable string) error {
+func createReplicaStateTable(ctx context.Context, client table.Client, stateTable string, instanceId string) error {
 	query := fmt.Sprintf("CREATE TABLE %v (id Utf8, step_id Uint64, tx_id Uint64, state Utf8, "+
 		"last_msg Utf8, PRIMARY KEY(id))", stateTable)
 	err := client.Do(ctx,
@@ -106,7 +118,7 @@ func createReplicaStateTable(ctx context.Context, client table.Client, stateTabl
 	}
 
 	param := table.NewQueryParameters(
-		table.ValueParam("$instanceId", ydbTypes.UTF8Value("0")),
+		table.ValueParam("$instanceId", ydbTypes.UTF8Value(instanceId)),
 		table.ValueParam("$state", ydbTypes.UTF8Value(REPLICATION_OK)),
 	)
 	initQuery := fmt.Sprintf("UPSERT INTO %v (id, step_id, tx_id, state) VALUES ($instanceId,0,0, $state)",
@@ -118,7 +130,7 @@ func createReplicaStateTable(ctx context.Context, client table.Client, stateTabl
 		})
 }
 
-func NewProcessor(ctx context.Context, total int, stateTable string, client table.Client) (*Processor, error) {
+func NewProcessor(ctx context.Context, total int, stateTable string, client table.Client, instanceId string) (*Processor, error) {
 	var p Processor
 	p.hbTracker = hb_tracker.NewHeartBeatTracker(total)
 	p.txChannel = make(chan func() error, 1000)
@@ -126,16 +138,22 @@ func NewProcessor(ctx context.Context, total int, stateTable string, client tabl
 	p.dstServerClient = client
 	p.stateStoreQuery = createStateStoreQuery(stateTable)
 	p.stateTable = stateTable
+	p.instanceId = instanceId
 
-	step, err := selectReplicationPos(ctx, p.dstServerClient, stateTable)
+	if len(instanceId) == 0 {
+		return nil, errors.New("instance_id must be set")
+	}
+
+	step, err := selectReplicationPos(ctx, p.dstServerClient, stateTable, p.instanceId)
 	if err != nil {
-		if ydb.IsOperationError(err, Ydb.StatusIds_SCHEME_ERROR) {
-			err = createReplicaStateTable(ctx, p.dstServerClient, stateTable)
+		target := &NoInstance{}
+		if ydb.IsOperationError(err, Ydb.StatusIds_SCHEME_ERROR) || errors.As(err, &target) {
+			err = createReplicaStateTable(ctx, p.dstServerClient, stateTable, p.instanceId)
 			if err != nil {
 				return nil, err
 			}
 
-			step, err = selectReplicationPos(ctx, p.dstServerClient, stateTable)
+			step, err = selectReplicationPos(ctx, p.dstServerClient, stateTable, p.instanceId)
 			if err != nil {
 				return nil, err
 			}
@@ -181,7 +199,7 @@ func (processor *Processor) EnqueueHb(ctx context.Context, hb types.HbData) {
 
 func (processor *Processor) SaveReplicationState(ctx context.Context, status string, lastError string) error {
 	param := table.NewQueryParameters(
-		table.ValueParam("$instanceId", ydbTypes.UTF8Value("0")),
+		table.ValueParam("$instanceId", ydbTypes.UTF8Value(processor.instanceId)),
 		table.ValueParam("$state", ydbTypes.UTF8Value(status)),
 		table.ValueParam("$lastError", ydbTypes.UTF8Value(lastError)),
 	)
@@ -268,7 +286,7 @@ func (processor *Processor) FormatTx(ctx context.Context) (*TxBatch, error) {
 
 func (processor *Processor) PushAsSingleTx(ctx context.Context, data dst_table.PushQuery, position types.Position) error {
 	stateParam := table.NewQueryParameters(
-		table.ValueParam("$instanceId", ydbTypes.UTF8Value("0")),
+		table.ValueParam("$instanceId", ydbTypes.UTF8Value(processor.instanceId)),
 		table.ValueParam("$stateStepId", ydbTypes.Uint64Value(position.Step)),
 		table.ValueParam("$stateTxId", ydbTypes.Uint64Value(position.TxId)),
 	)

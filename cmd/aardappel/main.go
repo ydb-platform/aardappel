@@ -111,7 +111,7 @@ func main() {
 	xlog.Debug(ctx, "All topics described",
 		zap.Int("total parts", totalPartitions))
 
-	prc, err := processor.NewProcessor(ctx, totalPartitions, config.StateTable, dstDb.Table())
+	prc, err := processor.NewProcessor(ctx, totalPartitions, config.StateTable, dstDb.Table(), config.InstanceId)
 	if err != nil {
 		xlog.Fatal(ctx, "Unable to create processor", zap.Error(err))
 	}
