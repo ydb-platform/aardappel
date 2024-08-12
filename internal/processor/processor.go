@@ -18,8 +18,8 @@ import (
 	"time"
 )
 
-const REPLICATION_OK = 1
-const REPLICATION_FATAL_ERROR = 2
+const REPLICATION_OK = "OK"
+const REPLICATION_FATAL_ERROR = "FATAL_ERROR"
 
 type Processor struct {
 	txChannel       chan func() error
@@ -40,7 +40,7 @@ type ReplicationStats struct {
 type Channel interface {
 	EnqueueTx(ctx context.Context, data types.TxData)
 	EnqueueHb(ctx context.Context, heartbeat types.HbData)
-	SaveReplicationStatus(ctx context.Context, status uint16, lastError string) error
+	SaveReplicationState(ctx context.Context, state string, lastError string) error
 }
 
 type TxBatch struct {
@@ -54,18 +54,21 @@ UPSERT INTO
     %v
     (id, step_id, tx_id)
 VALUES
-    (0, $stateStepId, $stateTxId);
+    ($instanceId, $stateStepId, $stateTxId);
 `, stateTable)
 }
 
 func selectReplicationPos(ctx context.Context, client table.Client, stateTable string) (uint64, error) {
-	stateQuery := fmt.Sprintf("SELECT step_id, status_id, last_error FROM %v WHERE id = 0;", stateTable)
+	param := table.NewQueryParameters(
+		table.ValueParam("$instanceId", ydbTypes.UTF8Value("0")),
+	)
+	stateQuery := fmt.Sprintf("SELECT step_id, state, last_msg FROM %v WHERE id = $instanceId;", stateTable)
 	var step *uint64
-	var status_id *uint16
-	var last_error *string
+	var state *string
+	var lastMsg *string
 	err := client.DoTx(ctx,
 		func(ctx context.Context, tx table.TransactionActor) error {
-			res, err := tx.Execute(ctx, stateQuery, nil)
+			res, err := tx.Execute(ctx, stateQuery, param)
 			if err != nil {
 				return err
 			}
@@ -73,8 +76,8 @@ func selectReplicationPos(ctx context.Context, client table.Client, stateTable s
 			res.NextRow()
 			return res.ScanNamed(
 				named.Optional("step_id", &step),
-				named.Optional("status_id", &status_id),
-				named.Optional("last_error", &last_error),
+				named.Optional("state", &state),
+				named.Optional("last_msg", &lastMsg),
 			)
 		})
 
@@ -82,17 +85,17 @@ func selectReplicationPos(ctx context.Context, client table.Client, stateTable s
 		return 0, err
 	}
 
-	if *status_id != REPLICATION_OK {
+	if *state != REPLICATION_OK {
 		return 0, fmt.Errorf("unable to start replication. "+
-			"Stored replication status is not ok. last_error: %s, state: %v", *last_error, *status_id)
+			"Stored replication status is not ok. last_msg: %s, state: %s", *lastMsg, *state)
 	}
 
 	return *step, err
 }
 
 func createReplicaStateTable(ctx context.Context, client table.Client, stateTable string) error {
-	query := fmt.Sprintf("CREATE TABLE %v (id Uint32, step_id Uint64, tx_id Uint64, status_id Uint16, "+
-		"last_error Utf8, PRIMARY KEY(id))", stateTable)
+	query := fmt.Sprintf("CREATE TABLE %v (id Utf8, step_id Uint64, tx_id Uint64, state Utf8, "+
+		"last_msg Utf8, PRIMARY KEY(id))", stateTable)
 	err := client.Do(ctx,
 		func(ctx context.Context, s table.Session) error {
 			return s.ExecuteSchemeQuery(ctx, query, nil)
@@ -102,11 +105,15 @@ func createReplicaStateTable(ctx context.Context, client table.Client, stateTabl
 		return fmt.Errorf("unable to create table: %v %w", stateTable, err)
 	}
 
-	initQuery := fmt.Sprintf("UPSERT INTO %v (id, step_id, tx_id, status_id) VALUES (0,0,0, %v)",
-		stateTable, REPLICATION_OK)
+	param := table.NewQueryParameters(
+		table.ValueParam("$instanceId", ydbTypes.UTF8Value("0")),
+		table.ValueParam("$state", ydbTypes.UTF8Value(REPLICATION_OK)),
+	)
+	initQuery := fmt.Sprintf("UPSERT INTO %v (id, step_id, tx_id, state) VALUES ($instanceId,0,0, $state)",
+		stateTable)
 	return client.DoTx(ctx,
 		func(ctx context.Context, tx table.TransactionActor) error {
-			_, err := tx.Execute(ctx, initQuery, nil)
+			_, err := tx.Execute(ctx, initQuery, param)
 			return err
 		})
 }
@@ -172,12 +179,15 @@ func (processor *Processor) EnqueueHb(ctx context.Context, hb types.HbData) {
 	}
 }
 
-func (processor *Processor) SaveReplicationStatus(ctx context.Context, status uint16, lastError string) error {
+func (processor *Processor) SaveReplicationState(ctx context.Context, status string, lastError string) error {
 	param := table.NewQueryParameters(
-		table.ValueParam("$last_error", ydbTypes.UTF8Value(lastError)),
+		table.ValueParam("$instanceId", ydbTypes.UTF8Value("0")),
+		table.ValueParam("$state", ydbTypes.UTF8Value(status)),
+		table.ValueParam("$lastError", ydbTypes.UTF8Value(lastError)),
 	)
-	stopQuery := fmt.Sprintf("UPSERT INTO %v (id, status_id, last_error) VALUES (0,%v,$last_error)",
-		processor.stateTable, status)
+
+	stopQuery := fmt.Sprintf("UPSERT INTO %v (id, state, last_msg) VALUES ($instanceId,$state,$lastError)",
+		processor.stateTable)
 
 	return processor.dstServerClient.DoTx(ctx,
 		func(ctx context.Context, tx table.TransactionActor) error {
@@ -258,6 +268,7 @@ func (processor *Processor) FormatTx(ctx context.Context) (*TxBatch, error) {
 
 func (processor *Processor) PushAsSingleTx(ctx context.Context, data dst_table.PushQuery, position types.Position) error {
 	stateParam := table.NewQueryParameters(
+		table.ValueParam("$instanceId", ydbTypes.UTF8Value("0")),
 		table.ValueParam("$stateStepId", ydbTypes.Uint64Value(position.Step)),
 		table.ValueParam("$stateTxId", ydbTypes.Uint64Value(position.TxId)),
 	)
