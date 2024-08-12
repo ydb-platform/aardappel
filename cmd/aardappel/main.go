@@ -87,12 +87,13 @@ func main() {
 	if err != nil {
 		xlog.Fatal(ctx, "Unable to connect to src cluster", zap.Error(err))
 	}
-	xlog.Debug(ctx, "YDB opened")
+	xlog.Debug(ctx, "YDB src opened")
 
 	dstDb, err := ydb.Open(ctx, config.DstConnectionString, dstOpts...)
 	if err != nil {
 		xlog.Fatal(ctx, "Unable to connect to dst cluster", zap.Error(err))
 	}
+	xlog.Debug(ctx, "YDB dst opened")
 
 	var totalPartitions int
 	var streamDbgInfos []string
