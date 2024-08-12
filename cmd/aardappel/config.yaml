@@ -20,6 +20,8 @@ dst_client_balancer: false
 ##   dst_static_token - YDB static token
 dst_oauth2_file: "/opt/aardappel/secrets/dst-sa/key.json"
 
+# Instance of replication process
+instance_id: "0"
 ## Replication streams description
 streams:
   - src_topic: "producer1/cf1"         # Path to src topic

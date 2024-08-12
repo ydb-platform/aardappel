@@ -24,6 +24,7 @@ type Config struct {
 	DstClientBalancer   bool     `yaml:"dst_client_balancer"`
 	DstOAuthFile        string   `yaml:"dst_oauth2_file"`
 	DstStaticToken      string   `yaml:"dst_static_token"`
+	InstanceId          string   `yaml:"instance_id"`
 	Streams             []Stream `yaml:"streams"`
 	StateTable          string   `yaml:"state_table"`
 	MaxExpHbInterval    uint32   `yaml:"max_expected_heartbeat_interval"`
