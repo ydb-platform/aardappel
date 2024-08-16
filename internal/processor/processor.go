@@ -12,6 +12,7 @@ import (
 	"github.com/ydb-platform/ydb-go-genproto/protos/Ydb"
 	"github.com/ydb-platform/ydb-go-sdk/v3"
 	"github.com/ydb-platform/ydb-go-sdk/v3/table"
+	"github.com/ydb-platform/ydb-go-sdk/v3/table/options"
 	"github.com/ydb-platform/ydb-go-sdk/v3/table/result/named"
 	ydbTypes "github.com/ydb-platform/ydb-go-sdk/v3/table/types"
 	"go.uber.org/zap"
@@ -107,7 +108,7 @@ func selectReplicationPos(ctx context.Context, client table.Client, stateTable s
 
 func createReplicaStateTable(ctx context.Context, client table.Client, stateTable string, instanceId string) error {
 	query := fmt.Sprintf("CREATE TABLE %v (id Utf8, step_id Uint64, tx_id Uint64, state Utf8, "+
-		"last_msg Utf8, PRIMARY KEY(id))", stateTable)
+		"last_msg Utf8, lock_owner Utf8, lock_deadline Timestamp, PRIMARY KEY(id))", stateTable)
 	err := client.Do(ctx,
 		func(ctx context.Context, s table.Session) error {
 			return s.ExecuteSchemeQuery(ctx, query, nil)
@@ -284,7 +285,7 @@ func (processor *Processor) FormatTx(ctx context.Context) (*TxBatch, error) {
 	return &TxBatch{TxData: txs, Hb: hb}, nil
 }
 
-func (processor *Processor) PushAsSingleTx(ctx context.Context, data dst_table.PushQuery, position types.Position) error {
+func (processor *Processor) PushAsSingleTx(ctx context.Context, data dst_table.PushQuery, tx table.Transaction, position types.Position) error {
 	stateParam := table.NewQueryParameters(
 		table.ValueParam("$instanceId", ydbTypes.UTF8Value(processor.instanceId)),
 		table.ValueParam("$stateStepId", ydbTypes.Uint64Value(position.Step)),
@@ -292,14 +293,17 @@ func (processor *Processor) PushAsSingleTx(ctx context.Context, data dst_table.P
 	)
 	param := append(data.Parameters, *stateParam...)
 
-	return processor.dstServerClient.DoTx(ctx,
-		func(ctx context.Context, tx table.TransactionActor) error {
-			_, err := tx.Execute(ctx, data.Query+processor.stateStoreQuery, &param)
-			return err
-		})
+	_, err := tx.Execute(ctx, data.Query+processor.stateStoreQuery, &param, options.WithCommit())
+	return err
+	//return processor.dstServerClient.DoTx(ctx,
+	//	func(ctx context.Context, tx table.TransactionActor) error {
+	//		_, err := tx.Execute(ctx, data.Query+processor.stateStoreQuery, &param)
+	//		return err
+	//	})
 }
 
-func (processor *Processor) DoReplication(ctx context.Context, dstTables []*dst_table.DstTable) (*ReplicationStats, error) {
+func (processor *Processor) DoReplication(ctx context.Context, dstTables []*dst_table.DstTable,
+	lockExecutor func(fn func(context.Context, table.Session, table.Transaction) error) error) (*ReplicationStats, error) {
 	txDataPerTable := make([][]types.TxData, len(dstTables))
 	batch, err := processor.FormatTx(ctx)
 	if err != nil {
@@ -327,7 +331,11 @@ func (processor *Processor) DoReplication(ctx context.Context, dstTables []*dst_
 	}
 	xlog.Debug(ctx, "Query to perform", zap.String("query", query.Query))
 	commitDuration := time.Now().UnixMilli()
-	err = processor.PushAsSingleTx(ctx, query, types.Position{Step: batch.Hb.Step, TxId: 0})
+
+	err = lockExecutor(func(ctx context.Context, ts table.Session, txr table.Transaction) error {
+		return processor.PushAsSingleTx(ctx, query, txr, types.Position{Step: batch.Hb.Step, TxId: 0})
+	})
+
 	commitDuration = time.Now().UnixMilli() - commitDuration
 
 	if err != nil {

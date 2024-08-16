@@ -1,42 +1,13 @@
-## Connection string to the source cluster: grpcs://<ENDPOINT>/<DATABASE>
-src_connection_string: "grpcs://shared-1-grpc.ydb-global.svc.cluster.local:2135/testing-global/aardappel-test"
-## Whether aardappel use client balancer or not.
-## Set to false if direct connection between client and ydb nodes is not possible (k8s)
-## Set to true otherwise
-src_client_balancer: false
-## Source authorizatrion one of:
-##   src_oauth2_file - path to the oauth2 file
-##   src_static_token - YDB static token
-src_oauth2_file: "/opt/aardappel/secrets/src-sa/key.json"
-
-## Connection string to the destination cluster: grpcs://<ENDPOINT>/<DATABASE>
-dst_connection_string: "grpcs://shared-1-grpc.ydb-global.svc.cluster.local:2135/testing-global/aardappel-test"
-## Whether aardappel use client balancer or not.
-## Set to false if direct connection between client and ydb nodes is not possible (k8s)
-## Set to true otherwise
-dst_client_balancer: false
-## Destination authorizatrion one of:
-##   dst_oauth2_file - path to the oauth2 file
-##   dst_static_token - YDB static token
-dst_oauth2_file: "/opt/aardappel/secrets/dst-sa/key.json"
-
-# Instance of replication process
-instance_id: "0"
-## Replication streams description
+src_connection_string: "grpc://127.0.0.1:28048/Root/test"
+src_static_token: "root@builtin"
+dst_connection_string: "grpc://127.0.0.1:28048/Root/test"
+dst_static_token: "root@builtin"
 streams:
-  - src_topic: "producer1/cf1"         # Path to src topic
-    dst_table: "/Root/test/table1_rep" # Path to dst table (should exist and has compatible schema)
-    consumer: "c1"                     # Topic consumer name
+  - src_topic: "producer1/cf1"
+    dst_table: "/Root/test/table1_rep"
+    consumer: "c1"
 
-## The table name, aardappel will save internal state in this table
-## the table will be created in the destination database if absent.
-## Usually any name which is not clashed with existed tables.
-state_table: "state_table10"
-
-## Max timeout to analise missed heartbeat in seconds. If we don't get quorum during this interval
-## the warning message will be written to the log.
-## Should be greater than CDC configured heartbeat interval
+state_table: "state_table_16"
+instance_id: "0"
 max_expected_heartbeat_interval: 10
-
-## Log level (values "debug", "info", "warn", "error")
-log_level: "debug"
+log_level: "info"
