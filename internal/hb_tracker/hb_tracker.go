@@ -107,10 +107,13 @@ func (ht *HeartBeatTracker) AddHb(data types.HbData) error {
 	return nil
 }
 
-func (ht *HeartBeatTracker) GetReady() (types.HbData, bool) {
-	var resHb types.HbData
+func (ht *HeartBeatTracker) GetReady() bool {
+	return len(ht.streams) == ht.totalStreamsNum
+}
 
-	if len(ht.streams) != ht.totalStreamsNum {
+func (ht *HeartBeatTracker) GetQuorum() (types.HbData, bool) {
+	var resHb types.HbData
+	if !ht.GetReady() {
 		return resHb, false
 	}
 
@@ -127,6 +130,37 @@ func (ht *HeartBeatTracker) GetReady() (types.HbData, bool) {
 	}
 
 	return resHb, true
+}
+
+func (ht *HeartBeatTracker) GetMaxHb() types.HbData {
+	var resHb types.HbData
+
+	var inited bool
+	for _, v := range ht.streams {
+		if !inited {
+			resHb = v
+			inited = true
+		} else {
+			if v.Step > resHb.Step {
+				resHb = v
+			}
+		}
+	}
+
+	return resHb
+}
+
+func (ht *HeartBeatTracker) GetQuorumAfter(hb types.HbData) (types.HbData, bool) {
+	resHb, ok := ht.GetQuorum()
+	if !ok {
+		return resHb, false
+	}
+
+	if resHb.Step > hb.Step {
+		return resHb, true
+	}
+
+	return types.HbData{}, false
 }
 
 func (ht *HeartBeatTracker) Commit(data types.HbData) bool {
