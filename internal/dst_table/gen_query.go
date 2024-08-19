@@ -10,7 +10,99 @@ import (
 	ydb_types "github.com/ydb-platform/ydb-go-sdk/v3/table/types"
 	"go.uber.org/zap"
 	"sort"
+	"strings"
 )
+
+type UpdatingData struct {
+	ColumnValues    map[string]json.RawMessage
+	ColumnsString   string
+	KeyValues       []json.RawMessage
+	KeyValuesString string
+}
+
+func (data *UpdatingData) GetSortUpdatingColumns() string {
+	sortColumns := make([]string, 0, len(data.ColumnValues))
+	for key := range data.ColumnValues {
+		sortColumns = append(sortColumns, key)
+	}
+	sort.Strings(sortColumns)
+
+	result := strings.Join(sortColumns, ", ")
+
+	return result
+}
+
+func NewUpdatingData(txData types.TxData, txKey string) *UpdatingData {
+	var data UpdatingData
+	data.ColumnValues = make(map[string]json.RawMessage, len(txData.ColumnValues))
+	for columnName, columnValue := range txData.ColumnValues {
+		data.ColumnValues[columnName] = columnValue
+	}
+	data.KeyValues = txData.KeyValues
+	data.KeyValuesString = txKey
+	data.ColumnsString = data.GetSortUpdatingColumns()
+	return &data
+}
+
+func (data *UpdatingData) UpdateColumns(txData types.TxData, txKey string) {
+	for columnName, columnValue := range txData.ColumnValues {
+		data.ColumnValues[columnName] = columnValue
+	}
+	data.KeyValues = txData.KeyValues
+	data.KeyValuesString = txKey
+	data.ColumnsString = data.GetSortUpdatingColumns()
+}
+
+type ByColumns []UpdatingData
+
+func (v ByColumns) Len() int {
+	return len(v)
+}
+
+func (v ByColumns) Swap(i, j int) {
+	v[i], v[j] = v[j], v[i]
+}
+
+func (v ByColumns) Less(i, j int) bool {
+	return (v[i].ColumnsString < v[j].ColumnsString) ||
+		(v[i].ColumnsString == v[j].ColumnsString && v[i].KeyValuesString < v[j].KeyValuesString)
+}
+
+type ByKeys []UpdatingData
+
+func (v ByKeys) Len() int {
+	return len(v)
+}
+
+func (v ByKeys) Swap(i, j int) {
+	v[i], v[j] = v[j], v[i]
+}
+
+func (v ByKeys) Less(i, j int) bool {
+	return v[i].KeyValuesString < v[j].KeyValuesString
+}
+
+func groupByColumns(data []UpdatingData) [][]UpdatingData {
+	var result [][]UpdatingData
+	if len(data) == 0 {
+		return result
+	}
+
+	currentColumns := data[0].ColumnsString
+	var group []UpdatingData
+
+	for _, tx := range data {
+		if tx.ColumnsString != currentColumns {
+			result = append(result, group)
+			group = []UpdatingData{}
+			currentColumns = tx.ColumnsString
+		}
+		group = append(group, tx)
+	}
+	result = append(result, group)
+
+	return result
+}
 
 type QueryStatement struct {
 	Statement string
@@ -205,7 +297,7 @@ func CheckPrimaryKeySize(tablePk []string, updatePk []json.RawMessage) error {
 	return nil
 }
 
-func GenListParam(ctx context.Context, tableMetaInfo TableMetaInfo, txsData []types.TxData) (ydb_types.Value, error) {
+func GenListParam(ctx context.Context, tableMetaInfo TableMetaInfo, txsData []UpdatingData) (ydb_types.Value, error) {
 	values := make([]ydb_types.Value, 0, len(txsData))
 	for row, txData := range txsData {
 		err := CheckPrimaryKeySize(tableMetaInfo.PrimaryKey, txData.KeyValues)
@@ -226,6 +318,10 @@ func GenListParam(ctx context.Context, tableMetaInfo TableMetaInfo, txsData []ty
 			ydbColumns = append(ydbColumns, ydb_types.StructFieldValue(columnName, value))
 		}
 		for columnName, columnValue := range txData.ColumnValues {
+			_, columnExist := tableMetaInfo.Columns[columnName]
+			if !columnExist {
+				return nil, fmt.Errorf("Column [%s] is not in dst table scheme", columnName)
+			}
 			value, err := ConvertToYDBValue(columnValue, tableMetaInfo.Columns[columnName].Type)
 			if err != nil {
 				xlog.Error(ctx, "Can't get ydb value for column", zap.String("column", columnName), zap.Int("row", row))
@@ -241,10 +337,14 @@ func GenListParam(ctx context.Context, tableMetaInfo TableMetaInfo, txsData []ty
 	return ydb_types.ListValue(values...), nil
 }
 
-func GenQueryFromUpdateTx(ctx context.Context, tableMetaInfo TableMetaInfo, txData []types.TxData, localStatementNum int, globalStatementNum int) (QueryStatement, error) {
+func GenQueryFromUpdateTx(ctx context.Context, tableMetaInfo TableMetaInfo, txData []UpdatingData, localStatementNum int, globalStatementNum int) (QueryStatement, error) {
 	result := NewQueryStatement()
 	pName := "$p_" + string(fmt.Sprint(globalStatementNum)) + "_" + string(fmt.Sprint(localStatementNum))
-	result.Statement = "UPSERT INTO " + tableMetaInfo.Name + " SELECT * FROM AS_TABLE(" + pName + ");\n"
+	allColumns := strings.Join(tableMetaInfo.PrimaryKey, ", ")
+	if len(txData[0].ColumnValues) > 0 {
+		allColumns += ", " + txData[0].ColumnsString
+	}
+	result.Statement = "UPSERT INTO " + tableMetaInfo.Name + " (" + allColumns + ") SELECT " + allColumns + " FROM AS_TABLE(" + pName + ");\n"
 	param, err := GenListParam(ctx, tableMetaInfo, txData)
 	if err != nil {
 		xlog.Error(ctx, "Unable to gen list param", zap.Error(err))
@@ -254,7 +354,7 @@ func GenQueryFromUpdateTx(ctx context.Context, tableMetaInfo TableMetaInfo, txDa
 	return *result, nil
 }
 
-func GenQueryFromEraseTx(ctx context.Context, tableMetaInfo TableMetaInfo, txData []types.TxData, localStatementNum int, globalStatementNum int) (QueryStatement, error) {
+func GenQueryFromEraseTx(ctx context.Context, tableMetaInfo TableMetaInfo, txData []UpdatingData, localStatementNum int, globalStatementNum int) (QueryStatement, error) {
 	result := NewQueryStatement()
 	pName := "$p_" + string(fmt.Sprint(globalStatementNum)) + "_" + string(fmt.Sprint(localStatementNum))
 	result.Statement = "DELETE FROM " + tableMetaInfo.Name + " ON SELECT * FROM AS_TABLE(" + pName + ");\n"
@@ -273,80 +373,89 @@ func GenQueryByTxsType(ctx context.Context, tableMetaInfo TableMetaInfo, txData 
 		return QueryStatement{}, nil
 	}
 
-	upsertResult := make(map[string]types.TxData)
-	deleteResult := make(map[string]types.TxData)
+	upsertResult := make(map[string]UpdatingData)
+	deleteResult := make(map[string]UpdatingData)
 
-	serializeKey := func(key []json.RawMessage) string {
+	serializeKey := func(key []json.RawMessage) (string, error) {
 		data, err := json.Marshal(key)
 		if err != nil {
-			panic(err)
+			return "", err
 		}
-		return string(data)
+		return string(data), nil
 	}
 
 	for i := range txData {
-		txKey := serializeKey(txData[i].KeyValues)
+		txKey, err := serializeKey(txData[i].KeyValues)
+		if err != nil {
+			xlog.Error(ctx, "error to serialize key values in tx", zap.Error(err))
+			return QueryStatement{}, fmt.Errorf("GenQueryByTxsType: %w", err)
+		}
+
 		if txData[i].IsUpdateOperation() {
-			_, ok := deleteResult[txKey]
-			if ok {
+			_, deleteExist := deleteResult[txKey]
+			if deleteExist {
 				delete(deleteResult, txKey)
 			}
-			upsertResult[txKey] = txData[i]
+			if data, upsertExist := upsertResult[txKey]; upsertExist {
+				data.UpdateColumns(txData[i], txKey)
+			} else {
+				upsertResult[txKey] = *NewUpdatingData(txData[i], txKey)
+			}
 			continue
 		}
 		if txData[i].IsEraseOperation() {
-			_, ok := upsertResult[txKey]
-			if ok {
+			_, upsertExist := upsertResult[txKey]
+			if upsertExist {
 				delete(upsertResult, txKey)
 			}
-			deleteResult[txKey] = txData[i]
+			if data, deleteExist := deleteResult[txKey]; deleteExist {
+				data.UpdateColumns(txData[i], txKey)
+			} else {
+				deleteResult[txKey] = *NewUpdatingData(txData[i], txKey)
+			}
 			continue
 		}
 		return QueryStatement{}, fmt.Errorf("GenQuery: unknown tx operation type")
 	}
 
-	upsertKeys := make([]string, 0, len(upsertResult))
-	for key := range upsertResult {
-		upsertKeys = append(upsertKeys, key)
+	upsertResultList := make([]UpdatingData, 0, len(upsertResult))
+	deleteResultList := make([]UpdatingData, 0, len(deleteResult))
+	for _, data := range upsertResult {
+		upsertResultList = append(upsertResultList, data)
 	}
-	deleteKeys := make([]string, 0, len(deleteResult))
-	for key := range deleteResult {
-		deleteKeys = append(deleteKeys, key)
+	for _, data := range deleteResult {
+		deleteResultList = append(deleteResultList, data)
 	}
-	sort.Strings(upsertKeys)
-	sort.Strings(deleteKeys)
+	sort.Sort(ByColumns(upsertResultList))
+	sort.Sort(ByKeys(deleteResultList))
 
-	upsertTxs := make([]types.TxData, 0, len(upsertResult))
-	deleteTxs := make([]types.TxData, 0, len(deleteResult))
-	for _, key := range upsertKeys {
-		upsertTxs = append(upsertTxs, upsertResult[key])
-	}
-	for _, key := range deleteKeys {
-		deleteTxs = append(deleteTxs, deleteResult[key])
-	}
+	upsertResults := groupByColumns(upsertResultList)
 
 	result := NewQueryStatement()
 	localStatementNum := 0
 
-	if len(upsertTxs) > 0 {
-		upsertTxQuery, err := GenQueryFromUpdateTx(ctx, tableMetaInfo, upsertTxs, localStatementNum, globalStatementNum)
-		if err != nil {
-			xlog.Error(ctx, "error in gen query for upsert txs", zap.Error(err))
-			return QueryStatement{}, fmt.Errorf("GenQuery: %w", err)
+	if len(upsertResultList) > 0 {
+		for i := range upsertResults {
+			upsertTxQuery, err := GenQueryFromUpdateTx(ctx, tableMetaInfo, upsertResults[i], localStatementNum, globalStatementNum)
+			if err != nil {
+				xlog.Error(ctx, "error in gen query for upsert txs", zap.Error(err))
+				return QueryStatement{}, fmt.Errorf("GenQueryByTxsType: %w", err)
+			}
+			result.Statement += upsertTxQuery.Statement
+			result.Params = append(result.Params, upsertTxQuery.Params...)
+			localStatementNum++
 		}
-		result.Statement += upsertTxQuery.Statement
-		result.Params = append(result.Params, upsertTxQuery.Params...)
-		localStatementNum++
 	}
 
-	if len(deleteTxs) > 0 {
-		deleteTxQuery, err := GenQueryFromEraseTx(ctx, tableMetaInfo, deleteTxs, localStatementNum, globalStatementNum)
+	if len(deleteResultList) > 0 {
+		deleteTxQuery, err := GenQueryFromEraseTx(ctx, tableMetaInfo, deleteResultList, localStatementNum, globalStatementNum)
 		if err != nil {
 			xlog.Error(ctx, "error in gen query for erase txs", zap.Error(err))
-			return QueryStatement{}, fmt.Errorf("GenQuery: %w", err)
+			return QueryStatement{}, fmt.Errorf("GenQueryByTxsType: %w", err)
 		}
 		result.Statement += deleteTxQuery.Statement
 		result.Params = append(result.Params, deleteTxQuery.Params...)
+		localStatementNum++
 	}
 
 	return *result, nil
