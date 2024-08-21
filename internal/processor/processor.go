@@ -295,11 +295,6 @@ func (processor *Processor) PushAsSingleTx(ctx context.Context, data dst_table.P
 
 	_, err := tx.Execute(ctx, data.Query+processor.stateStoreQuery, &param, options.WithCommit())
 	return err
-	//return processor.dstServerClient.DoTx(ctx,
-	//	func(ctx context.Context, tx table.TransactionActor) error {
-	//		_, err := tx.Execute(ctx, data.Query+processor.stateStoreQuery, &param)
-	//		return err
-	//	})
 }
 
 func (processor *Processor) DoReplication(ctx context.Context, dstTables []*dst_table.DstTable,
