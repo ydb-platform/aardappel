@@ -191,9 +191,7 @@ func main() {
 	for {
 		select {
 		case lockCtx := <-lockChannel:
-			{
-				doMain(lockCtx, config, srcDb, dstDb, locker)
-			}
+			doMain(lockCtx, config, srcDb, dstDb, locker)
 		case <-time.After(5 * time.Second):
 			xlog.Info(ctx, "unable to get lock, other instance of aardappel is running")
 		}
