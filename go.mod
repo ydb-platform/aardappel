@@ -6,10 +6,10 @@ toolchain go1.22.1
 
 require (
 	github.com/google/uuid v1.6.0
-	github.com/robdrynkin/ydb_locker v0.0.0-20240819173718-a08c4b6227e5
+	github.com/robdrynkin/ydb_locker v0.0.0-20240822143449-3fcf5898ea5e
 	github.com/stretchr/testify v1.8.1
-	github.com/ydb-platform/ydb-go-genproto v0.0.0-20240528144234-5d5a685e41f7
-	github.com/ydb-platform/ydb-go-sdk/v3 v3.76.6
+	github.com/ydb-platform/ydb-go-genproto v0.0.0-20240821162910-6cb364b2ccc8
+	github.com/ydb-platform/ydb-go-sdk/v3 v3.77.0
 	go.uber.org/zap v1.27.0
 	golang.org/x/net v0.28.0
 	gopkg.in/yaml.v3 v3.0.1

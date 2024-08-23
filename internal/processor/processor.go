@@ -9,8 +9,6 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"github.com/ydb-platform/ydb-go-genproto/protos/Ydb"
-	"github.com/ydb-platform/ydb-go-sdk/v3"
 	"github.com/ydb-platform/ydb-go-sdk/v3/table"
 	"github.com/ydb-platform/ydb-go-sdk/v3/table/options"
 	"github.com/ydb-platform/ydb-go-sdk/v3/table/result/named"
@@ -73,8 +71,9 @@ func selectReplicationPos(ctx context.Context, client table.Client, stateTable s
 	param := table.NewQueryParameters(
 		table.ValueParam("$instanceId", ydbTypes.UTF8Value(instanceId)),
 	)
-	stateQuery := fmt.Sprintf("SELECT step_id, state, last_msg FROM %v WHERE id = $instanceId;", stateTable)
+	stateQuery := fmt.Sprintf("SELECT step_id, tx_id, state, last_msg FROM %v WHERE id = $instanceId;", stateTable)
 	var step *uint64
+	var tx_id *uint64
 	var state *string
 	var lastMsg *string
 	err := client.DoTx(ctx,
@@ -89,6 +88,7 @@ func selectReplicationPos(ctx context.Context, client table.Client, stateTable s
 			}
 			return res.ScanNamed(
 				named.Optional("step_id", &step),
+				named.Optional("tx_id", &tx_id),
 				named.Optional("state", &state),
 				named.Optional("last_msg", &lastMsg),
 			)
@@ -98,37 +98,19 @@ func selectReplicationPos(ctx context.Context, client table.Client, stateTable s
 		return 0, err
 	}
 
+	if state == nil {
+		return 0, fmt.Errorf("State is not set in the state table")
+	}
+
+	if step == nil || tx_id == nil {
+		return 0, fmt.Errorf("virtual timestamp is not set in the state table")
+	}
+
 	if *state != REPLICATION_OK {
-		return 0, fmt.Errorf("unable to start replication. "+
-			"Stored replication status is not ok. last_msg: %s, state: %s", *lastMsg, *state)
+		return 0, fmt.Errorf("Stored replication status is not ok. last_msg: %s, state: %s", *lastMsg, *state)
 	}
 
 	return *step, err
-}
-
-func createReplicaStateTable(ctx context.Context, client table.Client, stateTable string, instanceId string) error {
-	query := fmt.Sprintf("CREATE TABLE %v (id Utf8, step_id Uint64, tx_id Uint64, state Utf8, "+
-		"last_msg Utf8, lock_owner Utf8, lock_deadline Timestamp, PRIMARY KEY(id))", stateTable)
-	err := client.Do(ctx,
-		func(ctx context.Context, s table.Session) error {
-			return s.ExecuteSchemeQuery(ctx, query, nil)
-		})
-
-	if err != nil {
-		return fmt.Errorf("unable to create table: %v %w", stateTable, err)
-	}
-
-	param := table.NewQueryParameters(
-		table.ValueParam("$instanceId", ydbTypes.UTF8Value(instanceId)),
-		table.ValueParam("$state", ydbTypes.UTF8Value(REPLICATION_OK)),
-	)
-	initQuery := fmt.Sprintf("UPSERT INTO %v (id, step_id, tx_id, state) VALUES ($instanceId,0,0, $state)",
-		stateTable)
-	return client.DoTx(ctx,
-		func(ctx context.Context, tx table.TransactionActor) error {
-			_, err := tx.Execute(ctx, initQuery, param)
-			return err
-		})
 }
 
 func NewProcessor(ctx context.Context, total int, stateTable string, client table.Client, instanceId string) (*Processor, error) {
@@ -147,20 +129,7 @@ func NewProcessor(ctx context.Context, total int, stateTable string, client tabl
 
 	step, err := selectReplicationPos(ctx, p.dstServerClient, stateTable, p.instanceId)
 	if err != nil {
-		target := &NoInstance{}
-		if ydb.IsOperationError(err, Ydb.StatusIds_SCHEME_ERROR) || errors.As(err, &target) {
-			err = createReplicaStateTable(ctx, p.dstServerClient, stateTable, p.instanceId)
-			if err != nil {
-				return nil, err
-			}
-
-			step, err = selectReplicationPos(ctx, p.dstServerClient, stateTable, p.instanceId)
-			if err != nil {
-				return nil, err
-			}
-		} else {
-			return nil, err
-		}
+		return nil, err
 	}
 	p.lastStep.Store(step)
 	xlog.Debug(ctx, "processor created", zap.Uint64("last step", step))
