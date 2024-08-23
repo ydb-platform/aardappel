@@ -71,15 +71,10 @@ func DoReplication(ctx context.Context, prc *processor.Processor, dstTables []*d
 func createReplicaStateTable(ctx context.Context, client table.Client, stateTable string) error {
 	query := fmt.Sprintf("CREATE TABLE IF NOT EXISTS %v (id Utf8, step_id Uint64, tx_id Uint64, state Utf8, "+
 		"last_msg Utf8, lock_owner Utf8, lock_deadline Timestamp, PRIMARY KEY(id))", stateTable)
-	err := client.Do(ctx,
+	return client.Do(ctx,
 		func(ctx context.Context, s table.Session) error {
 			return s.ExecuteSchemeQuery(ctx, query, nil)
 		})
-
-	if err != nil {
-	}
-
-	return nil
 }
 
 func initReplicaStateTable(ctx context.Context, client table.Client, stateTable string, instanceId string) error {
