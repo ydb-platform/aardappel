@@ -12,9 +12,11 @@ import (
 	"fmt"
 	"github.com/google/uuid"
 	"github.com/robdrynkin/ydb_locker/pkg/ydb_locker"
+	"github.com/ydb-platform/ydb-go-genproto/protos/Ydb"
 	"github.com/ydb-platform/ydb-go-sdk/v3"
 	"github.com/ydb-platform/ydb-go-sdk/v3/balancers"
 	"github.com/ydb-platform/ydb-go-sdk/v3/table"
+	ydbTypes "github.com/ydb-platform/ydb-go-sdk/v3/table/types"
 	"github.com/ydb-platform/ydb-go-sdk/v3/topic/topicoptions"
 	"go.uber.org/zap"
 	"log"
@@ -64,6 +66,34 @@ func DoReplication(ctx context.Context, prc *processor.Processor, dstTables []*d
 		zap.Uint64("last quorum HB", stats.LastHeartBeat),
 		zap.Float32("commit duration", float32(stats.CommitDurationMs)/1000),
 		zap.Float32("waitForQuorumDuration", float32(passed-stats.CommitDurationMs)/1000))
+}
+
+func createReplicaStateTable(ctx context.Context, client table.Client, stateTable string) error {
+	query := fmt.Sprintf("CREATE TABLE IF NOT EXISTS %v (id Utf8, step_id Uint64, tx_id Uint64, state Utf8, "+
+		"last_msg Utf8, lock_owner Utf8, lock_deadline Timestamp, PRIMARY KEY(id))", stateTable)
+	return client.Do(ctx,
+		func(ctx context.Context, s table.Session) error {
+			return s.ExecuteSchemeQuery(ctx, query, nil)
+		})
+}
+
+func initReplicaStateTable(ctx context.Context, client table.Client, stateTable string, instanceId string) error {
+	param := table.NewQueryParameters(
+		table.ValueParam("$instanceId", ydbTypes.UTF8Value(instanceId)),
+		table.ValueParam("$state", ydbTypes.UTF8Value(processor.REPLICATION_OK)),
+	)
+	initQuery := fmt.Sprintf("INSERT INTO %v (id, step_id, tx_id, state) VALUES ($instanceId,0,0, $state)",
+		stateTable)
+	err := client.DoTx(ctx,
+		func(ctx context.Context, tx table.TransactionActor) error {
+			_, err := tx.Execute(ctx, initQuery, param)
+			return err
+		})
+
+	if ydb.IsOperationError(err, Ydb.StatusIds_PRECONDITION_FAILED) {
+		return nil
+	}
+	return err
 }
 
 func doMain(ctx context.Context, config configInit.Config, srcDb *ydb.Driver, dstDb *ydb.Driver, locker *ydb_locker.Locker) {
@@ -177,6 +207,18 @@ func main() {
 		xlog.Fatal(ctx, "Unable to connect to dst cluster", zap.Error(err))
 	}
 	xlog.Debug(ctx, "YDB dst opened")
+
+	err = createReplicaStateTable(ctx, dstDb.Table(), config.StateTable)
+	if err != nil {
+		xlog.Fatal(ctx, "Replication startup failed",
+			zap.String("unable to create table", config.StateTable), zap.Error(err))
+	}
+
+	err = initReplicaStateTable(ctx, dstDb.Table(), config.StateTable, config.InstanceId)
+	if err != nil {
+		xlog.Fatal(ctx, "Replication startup failed",
+			zap.String("unable to init table", config.StateTable), zap.Error(err))
+	}
 
 	hostname, _ := os.Hostname()
 	owner := fmt.Sprintf("lock_%s_%s", hostname, uuid.New().String())
