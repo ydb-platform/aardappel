@@ -3,6 +3,7 @@ package main
 import (
 	configInit "aardappel/internal/config"
 	"aardappel/internal/dst_table"
+	"aardappel/internal/pmon"
 	processor "aardappel/internal/processor"
 	topicReader "aardappel/internal/reader"
 	"aardappel/internal/util/xlog"
@@ -53,7 +54,7 @@ func GetLockerRequestBuilder(tableName string) *ydb_locker.LockRequestBuilderImp
 }
 
 func DoReplication(ctx context.Context, prc *processor.Processor, dstTables []*dst_table.DstTable,
-	lockExecutor func(fn func(context.Context, table.Session, table.Transaction) error) error) {
+	lockExecutor func(fn func(context.Context, table.Session, table.Transaction) error) error, metrics pmon.Metrics) {
 	passed := time.Now().UnixMilli()
 	stats, err := prc.DoReplication(ctx, dstTables, lockExecutor)
 	if err != nil {
@@ -61,6 +62,10 @@ func DoReplication(ctx context.Context, prc *processor.Processor, dstTables []*d
 	}
 	passed = time.Now().UnixMilli() - passed
 	perSecond := float32(stats.ModificationsCount) / (float32(passed) / 1000.0)
+	if metrics != nil {
+		metrics.ModificationCount(stats.ModificationsCount)
+		metrics.CommitDuration(float64(stats.CommitDurationMs) / 1000)
+	}
 	xlog.Info(ctx, "Replication step ok", zap.Int("modifications", stats.ModificationsCount),
 		zap.Float32("mps", perSecond),
 		zap.Uint64("last quorum HB", stats.LastHeartBeat),
@@ -118,6 +123,12 @@ func doMain(ctx context.Context, config configInit.Config, srcDb *ydb.Driver, ds
 		xlog.Fatal(ctx, "Unable to create processor", zap.Error(err))
 	}
 
+	var mon *pmon.PromMon
+	if config.MonServer != nil {
+		mon = pmon.NewPromMon(ctx, config.MonServer)
+		defer mon.Stop()
+	}
+
 	if config.MaxExpHbInterval != 0 {
 		xlog.Info(ctx, "start heartbeat tracker guard timer", zap.Uint32("timeout in seconds", config.MaxExpHbInterval))
 		prc.StartHbGuard(ctx, config.MaxExpHbInterval, streamDbgInfos)
@@ -145,7 +156,7 @@ func doMain(ctx context.Context, config configInit.Config, srcDb *ydb.Driver, ds
 	}
 
 	for ctx.Err() == nil {
-		DoReplication(ctx, prc, dstTables, lockExecutor)
+		DoReplication(ctx, prc, dstTables, lockExecutor, mon)
 	}
 }
 
