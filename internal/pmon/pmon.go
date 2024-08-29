@@ -8,7 +8,6 @@ import (
 	"github.com/prometheus/client_golang/prometheus"
 	"github.com/prometheus/client_golang/prometheus/promhttp"
 	"go.uber.org/zap"
-	"log"
 	"net/http"
 	"time"
 )
@@ -72,7 +71,7 @@ func NewPromMon(ctx context.Context, config *config.MonServer) *PromMon {
 		shutdownCtx, shutdownRelease := context.WithTimeout(ctx, 10*time.Second)
 		defer shutdownRelease()
 		if err := server.Shutdown(shutdownCtx); err != nil {
-			log.Fatalf("HTTP shutdown error: %v", err)
+			xlog.Fatal(ctx, "HTTP shutdown error", zap.Error(err))
 		}
 	}
 
