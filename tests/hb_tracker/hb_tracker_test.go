@@ -10,7 +10,7 @@ func TestNotAllPart(t *testing.T) {
 	tracker := hb_tracker.NewHeartBeatTracker(3)
 	_ = tracker.AddHb(types.HbData{StreamId: types.StreamId{ReaderId: 0, PartitionId: 0}, Step: 0})
 
-	_, ready := tracker.GetReady()
+	_, ready := tracker.GetQuorum()
 	if ready {
 		t.Error("Expect ready status - we haven't add heartbeat for each part")
 	}
@@ -34,7 +34,7 @@ func TestGetLowestHb(t *testing.T) {
 
 	_ = tracker.AddHb(types.HbData{StreamId: types.StreamId{ReaderId: 1, PartitionId: 1}, Step: 4, CommitTopic: f6})
 
-	hb, ready := tracker.GetReady()
+	hb, ready := tracker.GetQuorum()
 	if !ready {
 		t.Error("Expect ready status - we have added heartbeat for each part")
 	}
@@ -47,14 +47,14 @@ func TestGetLowestHb(t *testing.T) {
 		t.Errorf("Unxpected commit fail, got: %d", hb.Step)
 	}
 
-	_, ready = tracker.GetReady()
+	_, ready = tracker.GetQuorum()
 	if ready {
 		t.Error("Expect ready status - we haven't add heartbeat for each part")
 	}
 
 	_ = tracker.AddHb(types.HbData{StreamId: types.StreamId{ReaderId: 1, PartitionId: 1}, Step: 5})
 
-	hb, ready = tracker.GetReady()
+	hb, ready = tracker.GetQuorum()
 	if !ready {
 		t.Error("Expect ready status - we have added heartbeat for each part")
 	}

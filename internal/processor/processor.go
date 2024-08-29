@@ -234,9 +234,8 @@ func (processor *Processor) assignTxsToDstTables(ctx context.Context, txs []type
 		txDataPerTable[txs[i].TableId] = append(txDataPerTable[txs[i].TableId], txs[i])
 	}
 	if len(txDataPerTable) != len(dstTables) {
-		return dst_table.PushQuery{}, 0, fmt.Errorf("Count of tables in dst database and count of tables in the txs mismatched",
-			zap.Int("txDataPerTable", len(txDataPerTable)),
-			zap.Int("dstTable", len(dstTables)))
+		return dst_table.PushQuery{}, 0, fmt.Errorf("Count of tables in dst database and count of tables in the txs mismatched, txDataPertabe: %d, dstTable: %d",
+			len(txDataPerTable), len(dstTables))
 	}
 	var query dst_table.PushQuery
 	var modifications int
