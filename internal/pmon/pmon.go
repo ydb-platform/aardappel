@@ -2,9 +2,12 @@ package pmon
 
 import (
 	"aardappel/internal/config"
+	"aardappel/internal/util/xlog"
 	"context"
+	"errors"
 	"github.com/prometheus/client_golang/prometheus"
 	"github.com/prometheus/client_golang/prometheus/promhttp"
+	"go.uber.org/zap"
 	"log"
 	"net/http"
 	"time"
@@ -52,10 +55,17 @@ func NewPromMon(ctx context.Context, config *config.MonServer) *PromMon {
 
 	go func() {
 		if len(config.Key) != 0 && len(config.Cert) != 0 {
-			log.Fatal(server.ListenAndServeTLS(config.Cert, config.Key))
+			err := server.ListenAndServeTLS(config.Cert, config.Key)
+			if err != nil && !errors.Is(err, http.ErrServerClosed) {
+				xlog.Fatal(ctx, "Unable to shutdown https mon", zap.Error(err))
+			}
 		} else {
-			log.Fatal(server.ListenAndServe())
+			err := server.ListenAndServe()
+			if err != nil && !errors.Is(err, http.ErrServerClosed) {
+				xlog.Fatal(ctx, "Unable to shutdown http mon", zap.Error(err))
+			}
 		}
+		xlog.Info(ctx, "mon server stopped")
 	}()
 
 	p.Stop = func() {
