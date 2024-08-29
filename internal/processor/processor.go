@@ -277,9 +277,8 @@ func (processor *Processor) DoReplication(ctx context.Context, dstTables []*dst_
 		txDataPerTable[batch.TxData[i].TableId] = append(txDataPerTable[batch.TxData[i].TableId], batch.TxData[i])
 	}
 	if len(txDataPerTable) != len(dstTables) {
-		return nil, fmt.Errorf("Size of dstTables and tables in the tx mismatched",
-			zap.Int("txDataPertabe", len(txDataPerTable)),
-			zap.Int("dstTable", len(dstTables)))
+		return nil, fmt.Errorf("size of dstTables and tables in the tx mismatched, txDataPertabe: %d, dstTable: %d",
+			len(txDataPerTable), len(dstTables))
 	}
 	var query dst_table.PushQuery
 	var modifications int
