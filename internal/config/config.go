@@ -15,20 +15,27 @@ type Stream struct {
 	Consumer string `yaml:"consumer"`
 }
 
+type MonServer struct {
+	Cert   string `yaml:"cert"`
+	Key    string `yaml:"key"`
+	Listen string `yaml:"listen"`
+}
+
 type Config struct {
-	SrcConnectionString string   `yaml:"src_connection_string"`
-	SrcClientBalancer   bool     `yaml:"src_client_balancer"`
-	SrcOAuthFile        string   `yaml:"src_oauth2_file"`
-	SrcStaticToken      string   `yaml:"src_static_token"`
-	DstConnectionString string   `yaml:"dst_connection_string"`
-	DstClientBalancer   bool     `yaml:"dst_client_balancer"`
-	DstOAuthFile        string   `yaml:"dst_oauth2_file"`
-	DstStaticToken      string   `yaml:"dst_static_token"`
-	InstanceId          string   `yaml:"instance_id"`
-	Streams             []Stream `yaml:"streams"`
-	StateTable          string   `yaml:"state_table"`
-	MaxExpHbInterval    uint32   `yaml:"max_expected_heartbeat_interval"`
-	LogLevel            string   `yaml:"log_level"`
+	SrcConnectionString string     `yaml:"src_connection_string"`
+	SrcClientBalancer   bool       `yaml:"src_client_balancer"`
+	SrcOAuthFile        string     `yaml:"src_oauth2_file"`
+	SrcStaticToken      string     `yaml:"src_static_token"`
+	DstConnectionString string     `yaml:"dst_connection_string"`
+	DstClientBalancer   bool       `yaml:"dst_client_balancer"`
+	DstOAuthFile        string     `yaml:"dst_oauth2_file"`
+	DstStaticToken      string     `yaml:"dst_static_token"`
+	InstanceId          string     `yaml:"instance_id"`
+	Streams             []Stream   `yaml:"streams"`
+	StateTable          string     `yaml:"state_table"`
+	MaxExpHbInterval    uint32     `yaml:"max_expected_heartbeat_interval"`
+	LogLevel            string     `yaml:"log_level"`
+	MonServer           *MonServer `yaml:"mon_server"`
 }
 
 func (config Config) ToString() (string, error) {

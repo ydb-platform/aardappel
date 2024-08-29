@@ -3,6 +3,7 @@ package main
 import (
 	configInit "aardappel/internal/config"
 	"aardappel/internal/dst_table"
+	"aardappel/internal/pmon"
 	processor "aardappel/internal/processor"
 	topicReader "aardappel/internal/reader"
 	"aardappel/internal/util/xlog"
@@ -21,6 +22,7 @@ import (
 	"go.uber.org/zap"
 	"log"
 	"os"
+	"reflect"
 	"time"
 )
 
@@ -53,7 +55,7 @@ func GetLockerRequestBuilder(tableName string) *ydb_locker.LockRequestBuilderImp
 }
 
 func DoReplication(ctx context.Context, prc *processor.Processor, dstTables []*dst_table.DstTable,
-	lockExecutor func(fn func(context.Context, table.Session, table.Transaction) error) error) {
+	lockExecutor func(fn func(context.Context, table.Session, table.Transaction) error) error, mon pmon.Metrics) {
 	passed := time.Now().UnixMilli()
 	stats, err := prc.DoReplication(ctx, dstTables, lockExecutor)
 	if err != nil {
@@ -61,6 +63,10 @@ func DoReplication(ctx context.Context, prc *processor.Processor, dstTables []*d
 	}
 	passed = time.Now().UnixMilli() - passed
 	perSecond := float32(stats.ModificationsCount) / (float32(passed) / 1000.0)
+	if !reflect.ValueOf(mon).IsNil() {
+		mon.ModificationCount(stats.ModificationsCount)
+		mon.CommitDuration(float64(stats.CommitDurationMs) / 1000)
+	}
 	xlog.Info(ctx, "Replication step ok", zap.Int("modifications", stats.ModificationsCount),
 		zap.Float32("mps", perSecond),
 		zap.Uint64("last quorum HB", stats.LastHeartBeat),
@@ -96,7 +102,8 @@ func initReplicaStateTable(ctx context.Context, client table.Client, stateTable 
 	return err
 }
 
-func doMain(ctx context.Context, config configInit.Config, srcDb *ydb.Driver, dstDb *ydb.Driver, locker *ydb_locker.Locker) {
+func doMain(ctx context.Context, config configInit.Config, srcDb *ydb.Driver, dstDb *ydb.Driver,
+	locker *ydb_locker.Locker, mon pmon.Metrics) {
 	var totalPartitions int
 	var streamDbgInfos []string
 	for i := 0; i < len(config.Streams); i++ {
@@ -145,7 +152,7 @@ func doMain(ctx context.Context, config configInit.Config, srcDb *ydb.Driver, ds
 	}
 
 	for ctx.Err() == nil {
-		DoReplication(ctx, prc, dstTables, lockExecutor)
+		DoReplication(ctx, prc, dstTables, lockExecutor, mon)
 	}
 }
 
@@ -173,6 +180,12 @@ func main() {
 		xlog.Debug(ctx, "Use configuration file",
 			zap.String("config_path", confPath),
 			zap.String("config", confStr))
+	}
+
+	var mon *pmon.PromMon
+	if config.MonServer != nil {
+		mon = pmon.NewPromMon(ctx, config.MonServer)
+		defer mon.Stop()
 	}
 
 	srcOpts, err := createYdbDriverAuthOptions(config.SrcOAuthFile, config.SrcStaticToken)
@@ -233,7 +246,7 @@ func main() {
 	for {
 		select {
 		case lockCtx := <-lockChannel:
-			doMain(lockCtx, config, srcDb, dstDb, locker)
+			doMain(lockCtx, config, srcDb, dstDb, locker, mon)
 		case <-time.After(5 * time.Second):
 			xlog.Info(ctx, "unable to get lock, other instance of aardappel is running")
 		}
