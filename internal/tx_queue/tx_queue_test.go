@@ -82,10 +82,10 @@ func CheckPopTxs(t *testing.T, step uint64, upperIndex int) {
 		txQueue.PushTx(pushOrder[i])
 	}
 	if upperIndex == -1 {
-		assert.Empty(t, txQueue.PopTxs(step))
+		assert.Empty(t, txQueue.PopTxsByStep(step))
 		return
 	}
-	assert.Equal(t, expectedOrder[0:upperIndex], txQueue.PopTxs(step))
+	assert.Equal(t, expectedOrder[0:upperIndex], txQueue.PopTxsByStep(step))
 }
 
 func TestTxQueueGet(t *testing.T) {

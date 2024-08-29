@@ -75,7 +75,7 @@ func DoReplication(ctx context.Context, prc *processor.Processor, dstTables []*d
 }
 
 func createReplicaStateTable(ctx context.Context, client table.Client, stateTable string) error {
-	query := fmt.Sprintf("CREATE TABLE IF NOT EXISTS %v (id Utf8, step_id Uint64, tx_id Uint64, state Utf8, "+
+	query := fmt.Sprintf("CREATE TABLE IF NOT EXISTS %v (id Utf8, step_id Uint64, tx_id Uint64, state Utf8, stage Utf8, "+
 		"last_msg Utf8, lock_owner Utf8, lock_deadline Timestamp, PRIMARY KEY(id))", stateTable)
 	return client.Do(ctx,
 		func(ctx context.Context, s table.Session) error {
@@ -87,8 +87,9 @@ func initReplicaStateTable(ctx context.Context, client table.Client, stateTable 
 	param := table.NewQueryParameters(
 		table.ValueParam("$instanceId", ydbTypes.UTF8Value(instanceId)),
 		table.ValueParam("$state", ydbTypes.UTF8Value(processor.REPLICATION_OK)),
+		table.ValueParam("$stage", ydbTypes.UTF8Value(processor.STAGE_INITIAL_SCAN)),
 	)
-	initQuery := fmt.Sprintf("INSERT INTO %v (id, step_id, tx_id, state) VALUES ($instanceId,0,0, $state)",
+	initQuery := fmt.Sprintf("INSERT INTO %v (id, step_id, tx_id, state, stage) VALUES ($instanceId,0,0, $state, $stage)",
 		stateTable)
 	err := client.DoTx(ctx,
 		func(ctx context.Context, tx table.TransactionActor) error {
