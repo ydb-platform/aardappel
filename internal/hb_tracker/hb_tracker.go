@@ -47,7 +47,7 @@ func findMissed(streams map[types.StreamId]types.HbData) []uint32 {
 }
 
 func (ht *HeartBeatTracker) guardLoop(ctx context.Context, timeout uint32, streamDbgInfos []string) {
-	for {
+	for ctx.Err() == nil {
 		// give chance to get heartbeat at the start time
 		time.Sleep(time.Duration(timeout) * time.Second)
 		if time.Now().Unix()-ht.lastFullHbTime.Load() > int64(timeout) {
