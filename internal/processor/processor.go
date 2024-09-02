@@ -156,6 +156,16 @@ func (processor *Processor) StartHbGuard(ctx context.Context, timeout uint32, st
 	processor.hbTracker.StartHbGuard(ctx, timeout, streamDbgInfos)
 }
 
+func (processor *Processor) Enqueue(ctx context.Context, fn func() error) {
+	// To be able to handle restart we must no block after ctx cancellation
+	select {
+	case processor.txChannel <- fn:
+		return
+	case <-ctx.Done():
+		return
+	}
+}
+
 func (processor *Processor) EnqueueHb(ctx context.Context, hb types.HbData) {
 	// Skip all before we already processed
 	lastStep := processor.lastStep.Load()
@@ -170,7 +180,7 @@ func (processor *Processor) EnqueueHb(ctx context.Context, hb types.HbData) {
 			zap.NamedError("topic commit error", err))
 		return
 	}
-	processor.txChannel <- func() error {
+	fn := func() error {
 		step := processor.lastStep.Load()
 		if hb.Step < step {
 			xlog.Warn(ctx, "suspicious behaviour, hb with step less then our last committed step has been "+
@@ -181,6 +191,8 @@ func (processor *Processor) EnqueueHb(ctx context.Context, hb types.HbData) {
 		}
 		return processor.hbTracker.AddHb(hb)
 	}
+
+	processor.Enqueue(ctx, fn)
 }
 
 func (processor *Processor) SaveReplicationState(ctx context.Context, status string, lastError string) error {
@@ -214,7 +226,7 @@ func (processor *Processor) EnqueueTx(ctx context.Context, tx types.TxData) {
 			zap.NamedError("topic commit error", err))
 		return
 	}
-	processor.txChannel <- func() error {
+	fn := func() error {
 		step := processor.lastStep.Load()
 		if tx.Step < step {
 			xlog.Warn(ctx, "suspicious behaviour, tx with step less then our last committed step has been"+
@@ -226,6 +238,8 @@ func (processor *Processor) EnqueueTx(ctx context.Context, tx types.TxData) {
 		processor.txQueue.PushTx(tx)
 		return nil
 	}
+
+	processor.Enqueue(ctx, fn)
 }
 
 func (processor *Processor) assignTxsToDstTables(ctx context.Context, txs []types.TxData, dstTables []*dst_table.DstTable) (dst_table.PushQuery, int, error) {

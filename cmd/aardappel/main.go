@@ -209,13 +209,6 @@ func main() {
 		dstOpts = append(dstOpts, ydb.WithBalancer(balancers.SingleConn()))
 	}
 
-	// Connect to YDB
-	srcDb, err := ydb.Open(ctx, config.SrcConnectionString, srcOpts...)
-	if err != nil {
-		xlog.Fatal(ctx, "Unable to connect to src cluster", zap.Error(err))
-	}
-	xlog.Debug(ctx, "YDB src opened")
-
 	dstDb, err := ydb.Open(ctx, config.DstConnectionString, dstOpts...)
 	if err != nil {
 		xlog.Fatal(ctx, "Unable to connect to dst cluster", zap.Error(err))
@@ -247,6 +240,12 @@ func main() {
 	for {
 		select {
 		case lockCtx := <-lockChannel:
+			// Connect to YDB
+			srcDb, err := ydb.Open(lockCtx, config.SrcConnectionString, srcOpts...)
+			if err != nil {
+				xlog.Fatal(ctx, "Unable to connect to src cluster", zap.Error(err))
+			}
+			xlog.Debug(ctx, "YDB src opened")
 			doMain(lockCtx, config, srcDb, dstDb, locker, mon)
 		case <-time.After(5 * time.Second):
 			xlog.Info(ctx, "unable to get lock, other instance of aardappel is running")
