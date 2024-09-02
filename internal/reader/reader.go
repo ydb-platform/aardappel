@@ -37,7 +37,11 @@ func ReadTopic(ctx context.Context, readerId uint32, reader *topicreader.Reader,
 			}
 		}
 	}
-	for {
+	defer func() {
+		err := reader.Close(ctx)
+		xlog.Error(ctx, "stop reader call returns", zap.Error(err))
+	}()
+	for ctx.Err() == nil {
 		msg, err := reader.ReadMessage(ctx)
 		if err != nil {
 			xlog.Error(ctx, "Unable to read message", zap.Error(err))
