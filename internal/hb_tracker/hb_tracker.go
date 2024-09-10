@@ -71,7 +71,6 @@ func (ht *HeartBeatTracker) guardLoop(ctx context.Context, timeout uint32, strea
 			}
 			ht.lock.Unlock()
 		}
-
 	}
 }
 
