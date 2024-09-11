@@ -316,7 +316,7 @@ func (processor *Processor) getHbQuorumAfter(ctx context.Context, hb types.HbDat
 
 func (processor *Processor) waitHbQuorum(ctx context.Context) (types.HbData, error) {
 	// Wait any quorum.
-	for {
+	for ctx.Err() == nil {
 		hb, err := processor.getHbQuorum(ctx)
 		if err != nil {
 			return types.HbData{}, err
@@ -327,11 +327,12 @@ func (processor *Processor) waitHbQuorum(ctx context.Context) (types.HbData, err
 		//TODO: Wait any hb instead of sleep here
 		time.Sleep(1 * time.Millisecond)
 	}
+	return types.HbData{}, ctx.Err()
 }
 
 func (processor *Processor) waitSyncHbQuorum(ctx context.Context, hb types.HbData) (types.HbData, error) {
 	// Wait quorum that will be large then hb.Step.
-	for {
+	for ctx.Err() == nil {
 		resHb, err := processor.getHbQuorumAfter(ctx, hb)
 		if err != nil {
 			return types.HbData{}, err
@@ -342,6 +343,7 @@ func (processor *Processor) waitSyncHbQuorum(ctx context.Context, hb types.HbDat
 		//TODO: Wait any hb instead of sleep here
 		time.Sleep(1 * time.Millisecond)
 	}
+	return types.HbData{}, ctx.Err()
 }
 
 func (processor *Processor) getSyncHbQuorum(ctx context.Context) (*types.HbData, error) {
