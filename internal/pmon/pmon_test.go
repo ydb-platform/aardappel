@@ -15,7 +15,7 @@ import (
 
 func TestMonCount(t *testing.T) {
 	ctx := context.Background()
-	p := pmon.NewPromMon(ctx, &config.MonServer{"", "", ":8080"})
+	p := pmon.NewPromMon(ctx, &config.MonServer{":8080"})
 	defer p.Stop()
 	p.ModificationCount(123)
 

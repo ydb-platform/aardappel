@@ -16,8 +16,6 @@ type Stream struct {
 }
 
 type MonServer struct {
-	Cert   string `yaml:"cert"`
-	Key    string `yaml:"key"`
 	Listen string `yaml:"listen"`
 }
 

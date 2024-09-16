@@ -53,16 +53,9 @@ func NewPromMon(ctx context.Context, config *config.MonServer) *PromMon {
 	http.Handle("/metrics", promhttp.HandlerFor(reg, promhttp.HandlerOpts{Registry: reg}))
 
 	go func() {
-		if len(config.Key) != 0 && len(config.Cert) != 0 {
-			err := server.ListenAndServeTLS(config.Cert, config.Key)
-			if err != nil && !errors.Is(err, http.ErrServerClosed) {
-				xlog.Fatal(ctx, "Unable to shutdown https mon", zap.Error(err))
-			}
-		} else {
-			err := server.ListenAndServe()
-			if err != nil && !errors.Is(err, http.ErrServerClosed) {
-				xlog.Fatal(ctx, "Unable to shutdown http mon", zap.Error(err))
-			}
+		err := server.ListenAndServe()
+		if err != nil && !errors.Is(err, http.ErrServerClosed) {
+			xlog.Fatal(ctx, "Unable to shutdown http mon", zap.Error(err))
 		}
 		xlog.Info(ctx, "mon server stopped")
 	}()
