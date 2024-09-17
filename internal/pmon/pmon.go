@@ -15,13 +15,17 @@ import (
 type Metrics interface {
 	ModificationCount(c int)
 	CommitDuration(s float64)
+	RequestSize(c int)
+	QuorumWaitingDuration(s float64)
 }
 
 type PromMon struct {
-	reg                *prometheus.Registry
-	modificationsCount prometheus.Counter
-	commitLatency      prometheus.Histogram
-	Stop               func()
+	reg                  *prometheus.Registry
+	modificationsCount   prometheus.Counter
+	commitLatency        prometheus.Histogram
+	requestSize          prometheus.Counter
+	quorumWaitingLatency prometheus.Histogram
+	Stop                 func()
 }
 
 func NewMetrics(reg *prometheus.Registry) *PromMon {
@@ -35,9 +39,20 @@ func NewMetrics(reg *prometheus.Registry) *PromMon {
 			Help:    "Latency of commit changes on the destination cluster (seconds).",
 			Buckets: prometheus.DefBuckets,
 		}),
+		requestSize: prometheus.NewCounter(prometheus.CounterOpts{
+			Name: "request_size_bytes",
+			Help: "Size of request on the destination cluster (bytes).",
+		}),
+		quorumWaitingLatency: prometheus.NewHistogram(prometheus.HistogramOpts{
+			Name:    "quorum_waiting_latency",
+			Help:    "Latency of waiting quorum changes on the destination cluster (seconds).",
+			Buckets: prometheus.DefBuckets,
+		}),
 	}
 	reg.MustRegister(m.modificationsCount)
 	reg.MustRegister(m.commitLatency)
+	reg.MustRegister(m.requestSize)
+	reg.MustRegister(m.quorumWaitingLatency)
 	return m
 }
 
@@ -77,4 +92,12 @@ func (p *PromMon) ModificationCount(c int) {
 
 func (p *PromMon) CommitDuration(s float64) {
 	p.commitLatency.Observe(s)
+}
+
+func (p *PromMon) RequestSize(c int) {
+	p.requestSize.Add(float64(c))
+}
+
+func (p *PromMon) QuorumWaitingDuration(s float64) {
+	p.quorumWaitingLatency.Observe(s)
 }
