@@ -6,7 +6,9 @@ import (
 	"aardappel/internal/tx_queue"
 	"aardappel/internal/types"
 	"aardappel/internal/util/xlog"
+	"bytes"
 	"context"
+	"encoding/gob"
 	"errors"
 	"fmt"
 	"github.com/ydb-platform/ydb-go-sdk/v3/table"
@@ -38,10 +40,17 @@ type Processor struct {
 	initialScanPos  *types.HbData
 }
 
-type ReplicationStats struct {
+type RequestStats struct {
 	ModificationsCount int
-	LastHeartBeat      uint64
-	CommitDurationMs   int64
+	RequestSize        int
+}
+
+type ReplicationStats struct {
+	ModificationsCount      int
+	LastHeartBeat           uint64
+	CommitDurationMs        int64
+	RequestSize             int
+	QuorumWaitingDurationMs int64
 }
 
 type Channel interface {
@@ -242,13 +251,27 @@ func (processor *Processor) EnqueueTx(ctx context.Context, tx types.TxData) {
 	processor.Enqueue(ctx, fn)
 }
 
-func (processor *Processor) assignTxsToDstTables(ctx context.Context, txs []types.TxData, dstTables []*dst_table.DstTable) (dst_table.PushQuery, int, error) {
+func (processor *Processor) getQueryRequestSize(query dst_table.PushQuery) (int, error) {
+	var size int
+	size += len(query.Query)
+	buf := new(bytes.Buffer)
+	enc := gob.NewEncoder(buf)
+	err := enc.Encode(query.Parameters)
+	if err != nil {
+		fmt.Println("Error query request parameters encoding:", err)
+		return 0, fmt.Errorf("%w; Unable to generate query", err)
+	}
+	size += buf.Len()
+	return size, nil
+}
+
+func (processor *Processor) assignTxsToDstTables(ctx context.Context, txs []types.TxData, dstTables []*dst_table.DstTable) (dst_table.PushQuery, RequestStats, error) {
 	txDataPerTable := make([][]types.TxData, len(dstTables))
 	for i := 0; i < len(txs); i++ {
 		txDataPerTable[txs[i].TableId] = append(txDataPerTable[txs[i].TableId], txs[i])
 	}
 	if len(txDataPerTable) != len(dstTables) {
-		return dst_table.PushQuery{}, 0, fmt.Errorf("Count of tables in dst database and count of tables in the txs mismatched, txDataPertabe: %d, dstTable: %d",
+		return dst_table.PushQuery{}, RequestStats{}, fmt.Errorf("Count of tables in dst database and count of tables in the txs mismatched, txDataPertabe: %d, dstTable: %d",
 			len(txDataPerTable), len(dstTables))
 	}
 	var query dst_table.PushQuery
@@ -256,16 +279,17 @@ func (processor *Processor) assignTxsToDstTables(ctx context.Context, txs []type
 	for i := 0; i < len(txDataPerTable); i++ {
 		q, err := dstTables[i].GenQuery(ctx, txDataPerTable[i], i)
 		if err != nil {
-			return dst_table.PushQuery{}, 0, fmt.Errorf("%w; Unable to generate query", err)
+			return dst_table.PushQuery{}, RequestStats{}, fmt.Errorf("%w; Unable to generate query", err)
 		}
 		query.Query += q.Query
 		modifications += q.ModificationsCount
 		query.Parameters = append(query.Parameters, q.Parameters...)
 
 	}
+	size, _ := processor.getQueryRequestSize(query)
 	xlog.Debug(ctx, "Query to perform", zap.String("query", query.Query))
 
-	return query, modifications, nil
+	return query, RequestStats{modifications, size}, nil
 }
 
 func (processor *Processor) doEvent(ctx context.Context) error {
@@ -368,6 +392,7 @@ func (processor *Processor) getSyncHbQuorum(ctx context.Context) (*types.HbData,
 func (processor *Processor) DoInitialScan(ctx context.Context, dstTables []*dst_table.DstTable,
 	lockExecutor func(fn func(context.Context, table.Session, table.Transaction) error) error) (*ReplicationStats, error) {
 
+	quorumWaitingDuration := time.Now().UnixMilli()
 	if processor.initialScanPos == nil {
 		// Trying to get a quorum, up to which there will be an initial scan state.
 		// This quorum should be greater than the max hb step in the first quorum obtained during the initial scan
@@ -381,6 +406,7 @@ func (processor *Processor) DoInitialScan(ctx context.Context, dstTables []*dst_
 		// Save this quorum if it is existed
 		processor.initialScanPos = hb
 	}
+	quorumWaitingDuration = time.Now().UnixMilli() - quorumWaitingDuration
 
 	maxCount := 1000
 	var txs []types.TxData
@@ -411,7 +437,7 @@ func (processor *Processor) DoInitialScan(ctx context.Context, dstTables []*dst_
 			zap.Uint32("tableId:", data.TableId))
 	}
 
-	query, modifications, err := processor.assignTxsToDstTables(ctx, txs, dstTables)
+	query, requestStats, err := processor.assignTxsToDstTables(ctx, txs, dstTables)
 	if err != nil {
 		return nil, err
 	}
@@ -453,15 +479,19 @@ func (processor *Processor) DoInitialScan(ctx context.Context, dstTables []*dst_
 		}
 	}
 
-	return &ReplicationStats{modifications,
+	return &ReplicationStats{requestStats.ModificationsCount,
 		0,
-		commitDuration}, nil
+		commitDuration,
+		requestStats.RequestSize,
+		quorumWaitingDuration}, nil
 }
 
-func (processor *Processor) FormatTx(ctx context.Context) (*TxBatch, error) {
+func (processor *Processor) FormatTx(ctx context.Context) (*TxBatch, int64, error) {
+	quorumWaitingDuration := time.Now().UnixMilli()
 	hb, err := processor.waitHbQuorum(ctx)
+	quorumWaitingDuration = time.Now().UnixMilli() - quorumWaitingDuration
 	if err != nil {
-		return nil, err
+		return nil, 0, err
 	}
 
 	// Here we have heartbeat and filled TxQueue - ready to format TX
@@ -477,7 +507,7 @@ func (processor *Processor) FormatTx(ctx context.Context) (*TxBatch, error) {
 			zap.Uint64("tx_id", data.TxId),
 			zap.Uint32("tableId:", data.TableId))
 	}
-	return &TxBatch{TxData: txs, Hb: hb}, nil
+	return &TxBatch{TxData: txs, Hb: hb}, quorumWaitingDuration, nil
 }
 
 func (processor *Processor) PushAsSingleTx(ctx context.Context, data dst_table.PushQuery, tx table.Transaction, position types.Position, stage string) error {
@@ -504,12 +534,12 @@ func (processor *Processor) DoReplication(ctx context.Context, dstTables []*dst_
 		return processor.DoInitialScan(ctx, dstTables, lockExecutor)
 	}
 
-	batch, err := processor.FormatTx(ctx)
+	batch, quorumWaitingDuration, err := processor.FormatTx(ctx)
 	if err != nil {
 		return nil, fmt.Errorf("%w; Unable to format tx for destination", err)
 	}
 
-	query, modifications, err := processor.assignTxsToDstTables(ctx, batch.TxData, dstTables)
+	query, requestStats, err := processor.assignTxsToDstTables(ctx, batch.TxData, dstTables)
 	if err != nil {
 		return nil, err
 	}
@@ -540,7 +570,9 @@ func (processor *Processor) DoReplication(ctx context.Context, dstTables []*dst_
 	if err != nil {
 		return nil, fmt.Errorf("%w; Unable to commit topic fot hb", err)
 	}
-	return &ReplicationStats{modifications,
+	return &ReplicationStats{requestStats.ModificationsCount,
 		batch.Hb.Step,
-		commitDuration}, nil
+		commitDuration,
+		requestStats.RequestSize,
+		quorumWaitingDuration}, nil
 }

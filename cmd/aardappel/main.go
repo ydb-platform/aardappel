@@ -66,12 +66,15 @@ func DoReplication(ctx context.Context, prc *processor.Processor, dstTables []*d
 	if !reflect.ValueOf(mon).IsNil() {
 		mon.ModificationCount(stats.ModificationsCount)
 		mon.CommitDuration(float64(stats.CommitDurationMs) / 1000)
+		mon.RequestSize(stats.RequestSize)
+		mon.QuorumWaitingDuration(float64(stats.QuorumWaitingDurationMs) / 1000)
 	}
 	xlog.Info(ctx, "Replication step ok", zap.Int("modifications", stats.ModificationsCount),
 		zap.Float32("mps", perSecond),
 		zap.Uint64("last quorum HB", stats.LastHeartBeat),
 		zap.Float32("commit duration", float32(stats.CommitDurationMs)/1000),
-		zap.Float32("waitForQuorumDuration", float32(passed-stats.CommitDurationMs)/1000))
+		zap.Int("request size", stats.RequestSize),
+		zap.Float32("quorum waiting duration", float32(stats.QuorumWaitingDurationMs)/1000))
 }
 
 func createReplicaStateTable(ctx context.Context, client table.Client, stateTable string) error {
