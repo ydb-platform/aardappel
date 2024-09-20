@@ -6,9 +6,7 @@ import (
 	"aardappel/internal/tx_queue"
 	"aardappel/internal/types"
 	"aardappel/internal/util/xlog"
-	"bytes"
 	"context"
-	"encoding/gob"
 	"errors"
 	"fmt"
 	"github.com/ydb-platform/ydb-go-sdk/v3/table"
@@ -251,18 +249,11 @@ func (processor *Processor) EnqueueTx(ctx context.Context, tx types.TxData) {
 	processor.Enqueue(ctx, fn)
 }
 
-func (processor *Processor) getQueryRequestSize(query dst_table.PushQuery) (int, error) {
+func (processor *Processor) getQueryRequestSize(query dst_table.PushQuery) int {
 	var size int
 	size += len(query.Query)
-	buf := new(bytes.Buffer)
-	enc := gob.NewEncoder(buf)
-	err := enc.Encode(query.Parameters)
-	if err != nil {
-		fmt.Println("Error query request parameters encoding:", err)
-		return 0, fmt.Errorf("%w; Unable to generate query", err)
-	}
-	size += buf.Len()
-	return size, nil
+	size += len(query.Parameters.String())
+	return size
 }
 
 func (processor *Processor) assignTxsToDstTables(ctx context.Context, txs []types.TxData, dstTables []*dst_table.DstTable) (dst_table.PushQuery, RequestStats, error) {
@@ -286,7 +277,7 @@ func (processor *Processor) assignTxsToDstTables(ctx context.Context, txs []type
 		query.Parameters = append(query.Parameters, q.Parameters...)
 
 	}
-	size, _ := processor.getQueryRequestSize(query)
+	size := processor.getQueryRequestSize(query)
 	xlog.Debug(ctx, "Query to perform", zap.String("query", query.Query))
 
 	return query, RequestStats{modifications, size}, nil
