@@ -11,6 +11,7 @@ import (
 	"go.uber.org/zap"
 	"sort"
 	"strings"
+	"time"
 )
 
 type UpdatingData struct {
@@ -223,11 +224,16 @@ func ConvertToYDBValue(v json.RawMessage, t ydb_types.Type) (ydb_types.Value, er
 		}
 		return nil, fmt.Errorf("ConvertToYDBValue: unmurshal to date value: %w", err)
 	case ydb_types.TypeTimestamp:
-		var value uint64
-		if err = json.Unmarshal(v, &value); err == nil {
-			return ydb_types.TimestampValue(value), nil
+		var value_str string
+		if err = json.Unmarshal(v, &value_str); err != nil {
+			return nil, fmt.Errorf("ConvertToYDBValue: timestamp: unmurshal to string value: %w", err)
 		}
-		return nil, fmt.Errorf("ConvertToYDBValue: unmurshal to timestamp value: %w", err)
+		format := "2006-01-02T15:04:05.000000Z"
+		value, err := time.Parse(format, value_str)
+		if err != nil {
+			return nil, fmt.Errorf("ConvertToYDBValue: timestamp: error to time parse: %w", err)
+		}
+		return ydb_types.TimestampValue(uint64(value.UnixMicro())), nil
 	case ydb_types.TypeInterval:
 		var value int64
 		if err = json.Unmarshal(v, &value); err == nil {

@@ -23,6 +23,7 @@ func GetTestTableMetaInfo() TableMetaInfo {
 		"value2": options.Column{"value2", ydb_types.TypeUint64, ""},
 		"value3": options.Column{"value3", ydb_types.Optional(ydb_types.TypeDouble), ""},
 		"value4": options.Column{"value4", ydb_types.Optional(ydb_types.TypeString), ""},
+		"value5": options.Column{"value5", ydb_types.Optional(ydb_types.TypeTimestamp), ""},
 	}
 	return result
 }
@@ -162,4 +163,18 @@ func TestGenOnlyEraseQuery(t *testing.T) {
 		"<|`key1`:17,`key2`:\"17\"|>" +
 		"]}"
 	assert.Equal(t, expectedParams, query.Parameters.String())
+}
+
+func TestGenQueryWithTimestamp(t *testing.T) {
+	ctx := context.Background()
+	txData1, _ := reader.ParseTxData(ctx, []byte("{\"update\":{\"value1\":\"15\", \"value5\":\"1970-01-01T00:00:01.000001Z\"},\"key\":[15,\"15\"],\"ts\":[18446744073709551615,18446744073709551615]}"), 0)
+	query, err := GenQueryFromUpdateTx(ctx, GetTestTableMetaInfo(), []UpdatingData{CreateData(txData1)}, 0, 1)
+	require.Nil(t, err)
+	assert.Equal(t, "UPSERT INTO path (key1, key2, value1, value5) SELECT key1, key2, value1, value5 FROM AS_TABLE($p_1_0);\n", query.Statement)
+	assert.Equal(t, len(query.Params), 1)
+	assert.Equal(t, query.Params[0].Name(), "$p_1_0")
+	expectedParams := "[" +
+		"<|`key1`:15,`key2`:\"15\",`value1`:\"15\",`value5`:Just(Timestamp(\"1970-01-01T00:00:01.000001Z\"))|>" +
+		"]"
+	assert.Equal(t, expectedParams, query.Params[0].Value().Yql())
 }
