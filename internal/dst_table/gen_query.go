@@ -24,7 +24,7 @@ type UpdatingData struct {
 func (data *UpdatingData) GetSortUpdatingColumns() string {
 	sortColumns := make([]string, 0, len(data.ColumnValues))
 	for key := range data.ColumnValues {
-		sortColumns = append(sortColumns, key)
+		sortColumns = append(sortColumns, fmt.Sprintf("`%s`", key))
 	}
 	sort.Strings(sortColumns)
 
@@ -346,7 +346,13 @@ func GenListParam(ctx context.Context, tableMetaInfo TableMetaInfo, txsData []Up
 func GenQueryFromUpdateTx(ctx context.Context, tableMetaInfo TableMetaInfo, txData []UpdatingData, localStatementNum int, globalStatementNum int) (QueryStatement, error) {
 	result := NewQueryStatement()
 	pName := "$p_" + string(fmt.Sprint(globalStatementNum)) + "_" + string(fmt.Sprint(localStatementNum))
-	allColumns := strings.Join(tableMetaInfo.PrimaryKey, ", ")
+
+	quotedKeys := make([]string, len(tableMetaInfo.PrimaryKey))
+	for i, key := range tableMetaInfo.PrimaryKey {
+		quotedKeys[i] = fmt.Sprintf("`%s`", key)
+	}
+	allColumns := strings.Join(quotedKeys, ", ")
+
 	if len(txData[0].ColumnValues) > 0 {
 		allColumns += ", " + txData[0].ColumnsString
 	}
