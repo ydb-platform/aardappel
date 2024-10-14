@@ -60,7 +60,7 @@ func TestGenUpdateQuery(t *testing.T) {
 	txData2, _ := reader.ParseTxData(ctx, []byte("{\"update\":{\"value1\":\"15\", \"value3\":1.00000009},\"key\":[16,\"16\"],\"ts\":[18446744073709551614,18446744073709551614]}"), 0)
 	query, err := GenQueryFromUpdateTx(ctx, GetTestTableMetaInfo(), []UpdatingData{CreateData(txData1), CreateData(txData2)}, 0, 1)
 	require.Nil(t, err)
-	assert.Equal(t, "UPSERT INTO path (key1, key2, value1, value2, value3, value4) SELECT key1, key2, value1, value2, value3, value4 FROM AS_TABLE($p_1_0);\n", query.Statement)
+	assert.Equal(t, "UPSERT INTO path (`key1`, `key2`, `value1`, `value2`, `value3`, `value4`) SELECT `key1`, `key2`, `value1`, `value2`, `value3`, `value4` FROM AS_TABLE($p_1_0);\n", query.Statement)
 	assert.Equal(t, len(query.Params), 1)
 	assert.Equal(t, query.Params[0].Name(), "$p_1_0")
 	expectedParams := "[" +
@@ -98,8 +98,8 @@ func TestGenQuery(t *testing.T) {
 	txData8, _ := reader.ParseTxData(ctx, []byte("{\"update\":{\"value1\":\"27\", \"value3\":1.00000009},\"key\":[17,\"17\"],\"ts\":[18446744073709551613,18446744073709551613]}"), 0)
 	query, err := GenQuery(ctx, GetTestTableMetaInfo(), []types.TxData{txData1, txData2, txData3, txData4, txData5, txData6, txData7, txData8}, 0)
 	require.Nil(t, err)
-	expectedResult := "UPSERT INTO path (key1, key2, value1, value2, value3, value4) SELECT key1, key2, value1, value2, value3, value4 FROM AS_TABLE($p_0_0);\n" +
-		"UPSERT INTO path (key1, key2, value1, value3) SELECT key1, key2, value1, value3 FROM AS_TABLE($p_0_1);\n" +
+	expectedResult := "UPSERT INTO path (`key1`, `key2`, `value1`, `value2`, `value3`, `value4`) SELECT `key1`, `key2`, `value1`, `value2`, `value3`, `value4` FROM AS_TABLE($p_0_0);\n" +
+		"UPSERT INTO path (`key1`, `key2`, `value1`, `value3`) SELECT `key1`, `key2`, `value1`, `value3` FROM AS_TABLE($p_0_1);\n" +
 		"DELETE FROM path ON SELECT * FROM AS_TABLE($p_0_2);\n"
 	assert.Equal(t, expectedResult, query.Query)
 	expectedParams := "{" +
@@ -130,8 +130,8 @@ func TestGenOnlyUpsertQuery(t *testing.T) {
 	txData5, _ := reader.ParseTxData(ctx, []byte("{\"update\":{\"value1\":\"27\", \"value3\":1.00000009},\"key\":[17,\"17\"],\"ts\":[18446744073709551613,18446744073709551613]}"), 0)
 	query, err := GenQuery(ctx, GetTestTableMetaInfo(), []types.TxData{txData1, txData2, txData3, txData4, txData5}, 0)
 	require.Nil(t, err)
-	expectedResult := "UPSERT INTO path (key1, key2, value1, value2, value3, value4) SELECT key1, key2, value1, value2, value3, value4 FROM AS_TABLE($p_0_0);\n" +
-		"UPSERT INTO path (key1, key2, value1, value3) SELECT key1, key2, value1, value3 FROM AS_TABLE($p_0_1);\n"
+	expectedResult := "UPSERT INTO path (`key1`, `key2`, `value1`, `value2`, `value3`, `value4`) SELECT `key1`, `key2`, `value1`, `value2`, `value3`, `value4` FROM AS_TABLE($p_0_0);\n" +
+		"UPSERT INTO path (`key1`, `key2`, `value1`, `value3`) SELECT `key1`, `key2`, `value1`, `value3` FROM AS_TABLE($p_0_1);\n"
 	assert.Equal(t, expectedResult, query.Query)
 	expectedParams := "{" +
 		"\"$p_0_0\":" +
@@ -170,7 +170,7 @@ func TestGenQueryWithTimestamp(t *testing.T) {
 	txData1, _ := reader.ParseTxData(ctx, []byte("{\"update\":{\"value1\":\"15\", \"value5\":\"1970-01-01T00:00:01.000001Z\"},\"key\":[15,\"15\"],\"ts\":[18446744073709551615,18446744073709551615]}"), 0)
 	query, err := GenQueryFromUpdateTx(ctx, GetTestTableMetaInfo(), []UpdatingData{CreateData(txData1)}, 0, 1)
 	require.Nil(t, err)
-	assert.Equal(t, "UPSERT INTO path (key1, key2, value1, value5) SELECT key1, key2, value1, value5 FROM AS_TABLE($p_1_0);\n", query.Statement)
+	assert.Equal(t, "UPSERT INTO path (`key1`, `key2`, `value1`, `value5`) SELECT `key1`, `key2`, `value1`, `value5` FROM AS_TABLE($p_1_0);\n", query.Statement)
 	assert.Equal(t, len(query.Params), 1)
 	assert.Equal(t, query.Params[0].Name(), "$p_1_0")
 	expectedParams := "[" +
