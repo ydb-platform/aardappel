@@ -356,7 +356,7 @@ func GenQueryFromUpdateTx(ctx context.Context, tableMetaInfo TableMetaInfo, txDa
 	if len(txData[0].ColumnValues) > 0 {
 		allColumns += ", " + txData[0].ColumnsString
 	}
-	result.Statement = "UPSERT INTO " + tableMetaInfo.Name + " (" + allColumns + ") SELECT " + allColumns + " FROM AS_TABLE(" + pName + ");\n"
+	result.Statement = "UPSERT INTO `" + tableMetaInfo.Name + "` (" + allColumns + ") SELECT " + allColumns + " FROM AS_TABLE(" + pName + ");\n"
 	param, err := GenListParam(ctx, tableMetaInfo, txData)
 	if err != nil {
 		xlog.Error(ctx, "Unable to gen list param", zap.Error(err))
@@ -369,7 +369,7 @@ func GenQueryFromUpdateTx(ctx context.Context, tableMetaInfo TableMetaInfo, txDa
 func GenQueryFromEraseTx(ctx context.Context, tableMetaInfo TableMetaInfo, txData []UpdatingData, localStatementNum int, globalStatementNum int) (QueryStatement, error) {
 	result := NewQueryStatement()
 	pName := "$p_" + string(fmt.Sprint(globalStatementNum)) + "_" + string(fmt.Sprint(localStatementNum))
-	result.Statement = "DELETE FROM " + tableMetaInfo.Name + " ON SELECT * FROM AS_TABLE(" + pName + ");\n"
+	result.Statement = "DELETE FROM `" + tableMetaInfo.Name + "` ON SELECT * FROM AS_TABLE(" + pName + ");\n"
 	param, err := GenListParam(ctx, tableMetaInfo, txData)
 	if err != nil {
 		xlog.Error(ctx, "Unable to gen list param", zap.Error(err))

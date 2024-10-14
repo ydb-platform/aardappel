@@ -61,7 +61,7 @@ func (dstTable *DstTable) Init(ctx context.Context) error {
 	}
 	metaInfo := NewTableMetaInfo()
 	metaInfo.PrimaryKey = desc.PrimaryKey
-	metaInfo.Name = desc.Name
+	metaInfo.Name = dstTable.tablePath
 	for _, column := range desc.Columns {
 		metaInfo.Columns[column.Name] = column
 		xlog.Debug(ctx, "Column type", zap.String("col_name", column.Name), zap.String("type", column.Type.String()))
