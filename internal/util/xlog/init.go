@@ -17,6 +17,8 @@ func SetupLogging(s string) *zap.Logger {
 	cfg := zap.NewProductionConfig()
 	cfg.Sampling = nil
 	cfg.Level.SetLevel(level)
+	cfg.EncoderConfig.MessageKey = "message"
+	cfg.EncoderConfig.LevelKey = "level"
 
 	l, err := cfg.Build()
 	if err != nil {
