@@ -148,7 +148,7 @@ func doMain(ctx context.Context, config configInit.Config, srcDb *ydb.Driver, ds
 			xlog.Fatal(ctx, "Unable to init dst table")
 		}
 		xlog.Debug(ctx, "Start reading")
-		go topicReader.ReadTopic(ctx, uint32(i), reader, prc)
+		go topicReader.ReadTopic(ctx, config.Streams[i].SrcTopic, uint32(i), reader, prc)
 	}
 
 	lockExecutor := func(fn func(context.Context, table.Session, table.Transaction) error) error {
