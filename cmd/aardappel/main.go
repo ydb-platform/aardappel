@@ -124,6 +124,12 @@ func doMain(ctx context.Context, config configInit.Config, srcDb *ydb.Driver, ds
 	xlog.Debug(ctx, "All topics described",
 		zap.Int("total parts", totalPartitions))
 
+	if config.CmdQueue != nil {
+		xlog.Debug(ctx, "Command queue present in config",
+			zap.String("path", config.CmdQueue.Path),
+			zap.String("consumer", config.CmdQueue.Consumer))
+	}
+
 	prc, err := processor.NewProcessor(ctx, totalPartitions, config.StateTable, dstDb.Table(), config.InstanceId)
 	if err != nil {
 		xlog.Fatal(ctx, "Unable to create processor", zap.Error(err))
@@ -133,6 +139,7 @@ func doMain(ctx context.Context, config configInit.Config, srcDb *ydb.Driver, ds
 		xlog.Info(ctx, "start heartbeat tracker guard timer", zap.Uint32("timeout in seconds", config.MaxExpHbInterval))
 		prc.StartHbGuard(ctx, config.MaxExpHbInterval, streamDbgInfos)
 	}
+
 	var dstTables []*dst_table.DstTable
 	for i := 0; i < len(config.Streams); i++ {
 		reader, err := srcDb.Topic().StartReader(config.Streams[i].Consumer, topicoptions.ReadTopic(config.Streams[i].SrcTopic))
