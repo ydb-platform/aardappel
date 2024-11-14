@@ -13,7 +13,9 @@ import (
 	"github.com/ydb-platform/ydb-go-sdk/v3/table/options"
 	"github.com/ydb-platform/ydb-go-sdk/v3/table/result/named"
 	ydbTypes "github.com/ydb-platform/ydb-go-sdk/v3/table/types"
+	"github.com/ydb-platform/ydb-go-sdk/v3/topic"
 	"go.uber.org/zap"
+	"sync"
 	"sync/atomic"
 	"time"
 )
@@ -55,6 +57,31 @@ type Channel interface {
 	EnqueueTx(ctx context.Context, data types.TxData)
 	EnqueueHb(ctx context.Context, heartbeat types.HbData)
 	SaveReplicationState(ctx context.Context, state string, lastError string) error
+}
+
+type ConflictHandler interface {
+	Handle(topicPath string)
+}
+
+type CmdQueueConflictHandler struct {
+	InstanceId string
+	Path       string
+	Consumer   string
+	Topic      topic.Client
+	Lock       sync.Mutex
+}
+
+func NewCmdQueueConflictHandler(ctx context.Context, instanceId string, path string, consumer string, topic topic.Client) *CmdQueueConflictHandler {
+	var handler CmdQueueConflictHandler
+	handler.InstanceId = instanceId
+	handler.Path = path
+	handler.Consumer = consumer
+	handler.Topic = topic
+	return &handler
+}
+
+func (this *CmdQueueConflictHandler) Handle(streamTopicPath string) {
+
 }
 
 type TxBatch struct {

@@ -124,10 +124,15 @@ func doMain(ctx context.Context, config configInit.Config, srcDb *ydb.Driver, ds
 	xlog.Debug(ctx, "All topics described",
 		zap.Int("total parts", totalPartitions))
 
+	var conflictHandler processor.ConflictHandler
+
 	if config.CmdQueue != nil {
 		xlog.Debug(ctx, "Command queue present in config",
 			zap.String("path", config.CmdQueue.Path),
 			zap.String("consumer", config.CmdQueue.Consumer))
+		conflictHandler = processor.NewCmdQueueConflictHandler(
+			ctx, config.InstanceId, config.CmdQueue.Path, config.CmdQueue.Consumer,
+			dstDb.Topic())
 	}
 
 	prc, err := processor.NewProcessor(ctx, totalPartitions, config.StateTable, dstDb.Table(), config.InstanceId)
