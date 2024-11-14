@@ -60,7 +60,11 @@ type Channel interface {
 }
 
 type ConflictHandler interface {
-	Handle(topicPath string)
+	// returns
+	// -1 - not found
+	//  0 - skip
+	//  1 - appply
+	Handle(topicPath string, serializeKey string, step uint64, txId uint64) int
 }
 
 type CmdQueueConflictHandler struct {
@@ -80,8 +84,8 @@ func NewCmdQueueConflictHandler(ctx context.Context, instanceId string, path str
 	return &handler
 }
 
-func (this *CmdQueueConflictHandler) Handle(streamTopicPath string) {
-
+func (this *CmdQueueConflictHandler) Handle(streamTopicPath string, serializeKey string, step uint64, txId uint64) int {
+	return -1
 }
 
 type TxBatch struct {
