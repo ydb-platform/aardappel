@@ -19,6 +19,11 @@ type MonServer struct {
 	Listen string `yaml:"listen"`
 }
 
+type CmdQueue struct {
+	Path     string `yaml:"path"`
+	Consumer string `yaml:"consumer"`
+}
+
 type Config struct {
 	SrcConnectionString string     `yaml:"src_connection_string"`
 	SrcClientBalancer   bool       `yaml:"src_client_balancer"`
@@ -34,6 +39,7 @@ type Config struct {
 	MaxExpHbInterval    uint32     `yaml:"max_expected_heartbeat_interval"`
 	LogLevel            string     `yaml:"log_level"`
 	MonServer           *MonServer `yaml:"mon_server"`
+	CmdQueue            *CmdQueue  `yaml:"cmd_queue"`
 }
 
 func (config Config) ToString() (string, error) {
