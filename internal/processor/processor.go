@@ -125,12 +125,12 @@ func (this *CmdQueueConflictHandler) Handle(ctx context.Context, streamTopicPath
 	}()
 
 	//TODO: Move to common place
-	serializeKey := func(key []json.RawMessage) string {
+	serializeKey := func(key []json.RawMessage) (string, error) {
 		data, err := json.Marshal(key)
 		if err != nil {
-			return "underfined"
+			return "underfined", err
 		}
-		return string(data)
+		return string(data), nil
 	}
 
 	var lastCmd *Cmd
@@ -157,7 +157,11 @@ func (this *CmdQueueConflictHandler) Handle(ctx context.Context, streamTopicPath
 			continue
 		}
 
-		cmdKey := serializeKey(cmd.Key)
+		cmdKey, err := serializeKey(cmd.Key)
+		if err != nil {
+			xlog.Error(ctx, "Unable to serialize key from command, skip the command", zap.Error(err))
+			continue
+		}
 
 		if cmd.InstanceId == this.InstanceId && cmd.Path == streamTopicPath && cmdKey == key && step == cmd.TS[0] && txId == cmd.TS[1] {
 			if cmd.Action != "skip" && cmd.Action != "apply" {
