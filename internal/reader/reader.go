@@ -20,10 +20,11 @@ type TopicData struct {
 	Resolved json.RawMessage `json:"resolved"`
 }
 
-func ReadTopic(ctx context.Context, topicPath string, readerId uint32, reader *topicreader.Reader, channel processor.Channel) {
+func ReadTopic(ctx context.Context, topicPath string, readerId uint32, reader *topicreader.Reader, channel processor.Channel, handler processor.ConflictHandler) {
 	var mu sync.Mutex
 	lastHb := make(map[int64]uint64)
-	verifyStream := func(part int64, data types.TxData) {
+	// returns true - pass item, false - skip item
+	verifyStream := func(part int64, data types.TxData) bool {
 		serializeKey := func(key []json.RawMessage) string {
 			data, err := json.Marshal(key)
 			if err != nil {
@@ -32,10 +33,35 @@ func ReadTopic(ctx context.Context, topicPath string, readerId uint32, reader *t
 			return string(data)
 		}
 		hb := lastHb[part]
+
 		if hb != 0 && data.Step < hb {
+
+			key := serializeKey(data.KeyValues)
+
+			if handler == nil {
+				xlog.Error(ctx, "Command topic is not configured, unable to receive external instructions on actions, stopping processing.")
+			} else {
+				rv := handler.Handle(ctx, topicPath, key, data.Step, data.TxId)
+				if rv >= 0 {
+					if rv == 0 {
+						xlog.Info(ctx, "skip message", zap.String("topic", topicPath),
+							zap.String("key", key),
+							zap.Uint64("step_id", data.Step),
+							zap.Uint64("tx_id", data.TxId))
+						return false
+					} else {
+						xlog.Info(ctx, "apply out of order message", zap.String("topic", topicPath),
+							zap.String("key", key),
+							zap.Uint64("step_id", data.Step),
+							zap.Uint64("tx_id", data.TxId))
+						return true
+					}
+				}
+			}
+
 			errString := fmt.Sprintf("Unexpected step_id in stream, last hb step_id: %v,"+
 				"got tx {\"topic\":\"%v\",\"key\":%v,\"ts\":[%v,%v]}",
-				lastHb[part], topicPath, serializeKey(data.KeyValues), data.Step, data.TxId)
+				lastHb[part], topicPath, key, data.Step, data.TxId)
 			stopErr := channel.SaveReplicationState(ctx, processor.REPLICATION_FATAL_ERROR, errString)
 			if stopErr != nil {
 				xlog.Fatal(ctx, errString,
@@ -44,11 +70,14 @@ func ReadTopic(ctx context.Context, topicPath string, readerId uint32, reader *t
 				xlog.Fatal(ctx, errString)
 			}
 		}
+		return true
 	}
+
 	defer func() {
 		err := reader.Close(ctx)
 		xlog.Error(ctx, "stop reader call returns", zap.Error(err))
 	}()
+
 	for ctx.Err() == nil {
 		msg, err := reader.ReadMessage(ctx)
 		if err != nil {
@@ -73,14 +102,23 @@ func ReadTopic(ctx context.Context, topicPath string, readerId uint32, reader *t
 				xlog.Error(ctx, "ParseTxData: Error parsing tx data", zap.Error(err))
 				return
 			}
-			verifyStream(msg.PartitionID(), data)
+			rv := verifyStream(msg.PartitionID(), data)
 			data.CommitTopic = func() error {
 				mu.Lock()
 				ret := reader.Commit(msg.Context(), msg)
 				mu.Unlock()
 				return ret
 			}
-			channel.EnqueueTx(ctx, data)
+			if rv == true {
+				channel.EnqueueTx(ctx, data)
+			} else {
+				err := data.CommitTopic()
+				if err != nil {
+					xlog.Error(ctx, "unable to commit topic during skip",
+						zap.NamedError("topic commit error", err))
+				}
+			}
+
 			// Add tx to txQueue
 		} else if topicData.Resolved != nil {
 			data, err := rd.ParseHBData(ctx, jsonData, types.StreamId{readerId, msg.PartitionID()})
