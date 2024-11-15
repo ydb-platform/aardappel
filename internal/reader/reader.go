@@ -31,7 +31,7 @@ func serializeKey(key []json.RawMessage) string {
 func WriteAllProblemTxsUntilNextHb(ctx context.Context, topicPath string, readerId uint32, reader *topicreader.Reader, channel processor.Channel, lastHb map[int64]uint64, hb uint64, partsCount int) {
 	var partsIsDone map[int64]bool
 	for part, partHb := range lastHb {
-		if partHb >= hb {
+		if partHb > hb {
 			partsIsDone[part] = true
 		}
 	}
@@ -73,7 +73,7 @@ func WriteAllProblemTxsUntilNextHb(ctx context.Context, topicPath string, reader
 				return
 			}
 			lastHb[msg.PartitionID()] = data.Step
-			if data.Step >= hb {
+			if data.Step > hb {
 				partsIsDone[msg.PartitionID()] = true
 			}
 		}

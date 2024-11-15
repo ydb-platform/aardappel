@@ -92,11 +92,7 @@ func initReplicaStateTable(ctx context.Context, client table.Client, stateTable 
 		table.ValueParam("$state", ydbTypes.UTF8Value(processor.REPLICATION_OK)),
 		table.ValueParam("$stage", ydbTypes.UTF8Value(processor.STAGE_INITIAL_SCAN)),
 	)
-	initQuery := fmt.Sprintf(
-		"DECLARE $instanceId AS UTF8;"+
-			"DECLARE $state AS UTF8;"+
-			"DECLARE $stage AS UTF8;"+
-			"INSERT INTO %v (id, step_id, tx_id, state, stage) VALUES ($instanceId,0,0, $state, $stage)",
+	initQuery := fmt.Sprintf("INSERT INTO %v (id, step_id, tx_id, state, stage) VALUES ($instanceId,0,0, $state, $stage)",
 		stateTable)
 	err := client.DoTx(ctx,
 		func(ctx context.Context, tx table.TransactionActor) error {
