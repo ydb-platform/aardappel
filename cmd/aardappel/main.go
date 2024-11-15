@@ -110,6 +110,7 @@ func doMain(ctx context.Context, config configInit.Config, srcDb *ydb.Driver, ds
 	locker *ydb_locker.Locker, mon pmon.Metrics) {
 	var totalPartitions int
 	var streamDbgInfos []string
+	topicPartsCountMap := make(map[int]int)
 	for i := 0; i < len(config.Streams); i++ {
 		desc, err := srcDb.Topic().Describe(ctx, config.Streams[i].SrcTopic)
 		if err != nil {
@@ -119,6 +120,7 @@ func doMain(ctx context.Context, config configInit.Config, srcDb *ydb.Driver, ds
 		}
 		totalPartitions += len(desc.Partitions)
 		streamDbgInfos = append(streamDbgInfos, desc.Path)
+		topicPartsCountMap[i] = len(desc.Partitions)
 	}
 
 	xlog.Debug(ctx, "All topics described",
@@ -160,7 +162,7 @@ func doMain(ctx context.Context, config configInit.Config, srcDb *ydb.Driver, ds
 			xlog.Fatal(ctx, "Unable to init dst table")
 		}
 		xlog.Debug(ctx, "Start reading")
-		go topicReader.ReadTopic(ctx, config.Streams[i].SrcTopic, uint32(i), reader, prc, conflictHandler)
+		go topicReader.ReadTopic(ctx, config.Streams[i].SrcTopic, uint32(i), reader, prc, topicPartsCountMap[i], conflictHandler)
 	}
 
 	lockExecutor := func(fn func(context.Context, table.Session, table.Transaction) error) error {
