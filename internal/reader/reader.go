@@ -28,14 +28,14 @@ func serializeKey(key []json.RawMessage) string {
 	return string(data)
 }
 
-func WriteAllProblemTxsUntilNextHb(ctx context.Context, topicPath string, readerId uint32, reader *topicreader.Reader, channel processor.Channel, lastHb map[int64]uint64, hb uint64, partsCount int) {
-	var partsIsDone map[int64]bool
+func WriteAllProblemTxsUntilNextHb(ctx context.Context, topicPath string, readerId uint32, reader *topicreader.Reader, lastHb map[int64]uint64, problemHb uint64, partsCount int) {
+	var releasedPartitions map[int64]bool
 	for part, partHb := range lastHb {
-		if partHb > hb {
-			partsIsDone[part] = true
+		if partHb > problemHb {
+			releasedPartitions[part] = true
 		}
 	}
-	for ctx.Err() == nil && len(partsIsDone) < partsCount {
+	for ctx.Err() == nil && len(releasedPartitions) < partsCount {
 		msg, err := reader.ReadMessage(ctx)
 		if err != nil {
 			xlog.Error(ctx, "Unable to read message", zap.Error(err))
@@ -63,7 +63,7 @@ func WriteAllProblemTxsUntilNextHb(ctx context.Context, topicPath string, reader
 			if partHb, ok := lastHb[msg.PartitionID()]; ok && data.Step < partHb {
 				errString := fmt.Sprintf("Unexpected step_id in stream, last hb step_id: %v,"+
 					"got tx {\"topic\":\"%v\",\"key\":%v,\"ts\":[%v,%v]}",
-					hb, topicPath, serializeKey(data.KeyValues), data.Step, data.TxId)
+					partHb, topicPath, serializeKey(data.KeyValues), data.Step, data.TxId)
 				xlog.Error(ctx, errString)
 			}
 		} else if topicData.Resolved != nil {
@@ -73,8 +73,8 @@ func WriteAllProblemTxsUntilNextHb(ctx context.Context, topicPath string, reader
 				return
 			}
 			lastHb[msg.PartitionID()] = data.Step
-			if data.Step > hb {
-				partsIsDone[msg.PartitionID()] = true
+			if data.Step > problemHb {
+				releasedPartitions[msg.PartitionID()] = true
 			}
 		}
 	}
@@ -116,7 +116,7 @@ func ReadTopic(ctx context.Context, topicPath string, readerId uint32, reader *t
 				"got tx {\"topic\":\"%v\",\"key\":%v,\"ts\":[%v,%v]}",
 				lastHb[part], topicPath, key, data.Step, data.TxId)
 			stopErr := channel.SaveReplicationState(ctx, processor.REPLICATION_FATAL_ERROR, errString)
-			WriteAllProblemTxsUntilNextHb(ctx, topicPath, readerId, reader, channel, lastHb, hb, partsCount)
+			WriteAllProblemTxsUntilNextHb(ctx, topicPath, readerId, reader, lastHb, hb, partsCount)
 			if stopErr != nil {
 				xlog.Fatal(ctx, errString,
 					zap.NamedError("this issue was not stored in the state table due to double error", stopErr))
