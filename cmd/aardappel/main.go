@@ -110,6 +110,7 @@ func doMain(ctx context.Context, config configInit.Config, srcDb *ydb.Driver, ds
 	locker *ydb_locker.Locker, mon pmon.Metrics) {
 	var totalPartitions int
 	var streamDbgInfos []string
+	topicPartsCountMap := make(map[int]int)
 	for i := 0; i < len(config.Streams); i++ {
 		desc, err := srcDb.Topic().Describe(ctx, config.Streams[i].SrcTopic)
 		if err != nil {
@@ -119,10 +120,22 @@ func doMain(ctx context.Context, config configInit.Config, srcDb *ydb.Driver, ds
 		}
 		totalPartitions += len(desc.Partitions)
 		streamDbgInfos = append(streamDbgInfos, desc.Path)
+		topicPartsCountMap[i] = len(desc.Partitions)
 	}
 
 	xlog.Debug(ctx, "All topics described",
 		zap.Int("total parts", totalPartitions))
+
+	var conflictHandler processor.ConflictHandler
+
+	if config.CmdQueue != nil {
+		xlog.Debug(ctx, "Command queue present in config",
+			zap.String("path", config.CmdQueue.Path),
+			zap.String("consumer", config.CmdQueue.Consumer))
+		conflictHandler = processor.NewCmdQueueConflictHandler(
+			ctx, config.InstanceId, config.CmdQueue.Path, config.CmdQueue.Consumer,
+			dstDb.Topic())
+	}
 
 	prc, err := processor.NewProcessor(ctx, totalPartitions, config.StateTable, dstDb.Table(), config.InstanceId)
 	if err != nil {
@@ -133,6 +146,7 @@ func doMain(ctx context.Context, config configInit.Config, srcDb *ydb.Driver, ds
 		xlog.Info(ctx, "start heartbeat tracker guard timer", zap.Uint32("timeout in seconds", config.MaxExpHbInterval))
 		prc.StartHbGuard(ctx, config.MaxExpHbInterval, streamDbgInfos)
 	}
+
 	var dstTables []*dst_table.DstTable
 	for i := 0; i < len(config.Streams); i++ {
 		reader, err := srcDb.Topic().StartReader(config.Streams[i].Consumer, topicoptions.ReadTopic(config.Streams[i].SrcTopic))
@@ -148,7 +162,7 @@ func doMain(ctx context.Context, config configInit.Config, srcDb *ydb.Driver, ds
 			xlog.Fatal(ctx, "Unable to init dst table")
 		}
 		xlog.Debug(ctx, "Start reading")
-		go topicReader.ReadTopic(ctx, config.Streams[i].SrcTopic, uint32(i), reader, prc)
+		go topicReader.ReadTopic(ctx, config.Streams[i].SrcTopic, uint32(i), reader, prc, topicPartsCountMap[i], conflictHandler)
 	}
 
 	lockExecutor := func(fn func(context.Context, table.Session, table.Transaction) error) error {

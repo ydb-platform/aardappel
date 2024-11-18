@@ -7,13 +7,19 @@ import (
 	"aardappel/internal/types"
 	"aardappel/internal/util/xlog"
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"github.com/ydb-platform/ydb-go-sdk/v3/table"
 	"github.com/ydb-platform/ydb-go-sdk/v3/table/options"
 	"github.com/ydb-platform/ydb-go-sdk/v3/table/result/named"
 	ydbTypes "github.com/ydb-platform/ydb-go-sdk/v3/table/types"
+	"github.com/ydb-platform/ydb-go-sdk/v3/topic"
+	"github.com/ydb-platform/ydb-go-sdk/v3/topic/topicoptions"
+	"github.com/ydb-platform/ydb-go-sdk/v3/topic/topicreader"
 	"go.uber.org/zap"
+	"io"
+	"sync"
 	"sync/atomic"
 	"time"
 )
@@ -55,6 +61,132 @@ type Channel interface {
 	EnqueueTx(ctx context.Context, data types.TxData)
 	EnqueueHb(ctx context.Context, heartbeat types.HbData)
 	SaveReplicationState(ctx context.Context, state string, lastError string) error
+}
+
+type ConflictHandler interface {
+	// returns
+	// -1 - not found
+	//  0 - skip
+	//  1 - appply
+	Handle(ctx context.Context, topicPath string, serializeKey string, step uint64, txId uint64) int
+}
+
+type Cmd struct {
+	InstanceId string            `json:"aardapel_instance_id"`
+	Key        []json.RawMessage `json:"key"`
+	TS         []uint64          `json:"ts"`
+	Action     string            `json:"action"`
+	Path       string            `json:"path"`
+}
+
+type CmdQueueConflictHandler struct {
+	InstanceId string
+	Path       string
+	Consumer   string
+	Topic      topic.Client
+	Lock       sync.Mutex
+}
+
+func NewCmdQueueConflictHandler(ctx context.Context, instanceId string, path string, consumer string, topic topic.Client) *CmdQueueConflictHandler {
+	var handler CmdQueueConflictHandler
+	handler.InstanceId = instanceId
+	handler.Path = path
+	handler.Consumer = consumer
+	handler.Topic = topic
+	return &handler
+}
+
+func readWithTimeout(ctx context.Context, reader *topicreader.Reader) (*topicreader.Message, error, bool) {
+	timingCtx, cancel := context.WithTimeout(ctx, time.Second*5)
+	defer cancel()
+	msg, err := reader.ReadMessage(timingCtx)
+	if timingCtx.Err() != nil {
+		return nil, nil, true
+	}
+	return msg, err, false
+}
+
+func (this *CmdQueueConflictHandler) Handle(ctx context.Context, streamTopicPath string, key string, step uint64, txId uint64) int {
+	this.Lock.Lock()
+	defer this.Lock.Unlock()
+
+	reader, err := this.Topic.StartReader(this.Consumer, topicoptions.ReadTopic(this.Path))
+	if err != nil {
+		xlog.Fatal(ctx, "Unable to read from cpecifyed command topic",
+			zap.String("consumer", this.Consumer),
+			zap.String("src_topic", this.Path),
+			zap.Error(err))
+		return -1
+	}
+
+	defer func() {
+		err := reader.Close(ctx)
+		xlog.Error(ctx, "stop reader call returns", zap.Error(err))
+	}()
+
+	//TODO: Move to common place
+	serializeKey := func(key []json.RawMessage) (string, error) {
+		data, err := json.Marshal(key)
+		if err != nil {
+			return "underfined", err
+		}
+		return string(data), nil
+	}
+
+	var lastCmd *Cmd
+	for ctx.Err() == nil {
+		msg, err, timeout := readWithTimeout(ctx, reader)
+		if timeout == true {
+			break
+		}
+
+		if err != nil {
+			xlog.Error(ctx, "Unable to read message", zap.Error(err))
+			return -1
+		}
+		jsonData, err := io.ReadAll(msg)
+		if err != nil {
+			xlog.Error(ctx, "Unable to read all", zap.Error(err))
+			return -1
+		}
+
+		var cmd Cmd
+		err = json.Unmarshal(jsonData, &cmd)
+		if err != nil || len(cmd.TS) != 2 {
+			xlog.Error(ctx, "Unable to parse command", zap.ByteString("json", jsonData), zap.Error(err))
+			continue
+		}
+
+		cmdKey, err := serializeKey(cmd.Key)
+		if err != nil {
+			xlog.Error(ctx, "Unable to serialize key from command, skip the command", zap.Error(err))
+			continue
+		}
+
+		if cmd.InstanceId == this.InstanceId && cmd.Path == streamTopicPath && cmdKey == key && step == cmd.TS[0] && txId == cmd.TS[1] {
+			if cmd.Action != "skip" && cmd.Action != "apply" {
+				xlog.Debug(ctx, "invalid command", zap.String("action", cmd.Action))
+			} else {
+				xlog.Debug(ctx, "External instruction found",
+					zap.String("topic", cmd.Path),
+					zap.String("key", cmdKey),
+					zap.Uint64("step", cmd.TS[0]),
+					zap.Uint64("txId", cmd.TS[1]),
+					zap.String("action", cmd.Action))
+
+				lastCmd = &cmd
+			}
+		}
+	}
+	if lastCmd != nil {
+		if lastCmd.Action == "skip" {
+			return 0
+		}
+		if lastCmd.Action == "apply" {
+			return 1
+		}
+	}
+	return -1
 }
 
 type TxBatch struct {
