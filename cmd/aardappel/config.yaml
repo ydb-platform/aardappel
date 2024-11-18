@@ -20,18 +20,21 @@ dst_client_balancer: false
 ##   dst_static_token - YDB static token
 dst_oauth2_file: "/opt/aardappel/secrets/dst-sa/key.json"
 
-# Instance of replication process
-instance_id: "0"
-## Replication streams description
-streams:
-  - src_topic: "producer1/cf1"         # Path to src topic
-    dst_table: "/Root/test/table1_rep" # Path to dst table (should exist and has compatible schema)
-    consumer: "c1"                     # Topic consumer name
-
-## The table name, aardappel will save internal state in this table
+## The table name to save replication state in the destination database
 ## the table will be created in the destination database if absent.
 ## Usually any name which is not clashed with existed tables.
-state_table: "state_table10"
+state_table: "aardappel_state"
+# Instance of replication process. Each aardappel process sharing the same state table should have a unique instance id to avoid mixing states.
+instance_id: "0"
+
+## Replica tables and cdc sources. Transactions will be applied consistently between those tables. Multiple tables can be specified.
+streams:
+  - src_topic: "producer1/cf1"         # Path of the cdc source topic for the 1st replica table
+    consumer: "c1"                     # Topic consumer name in a cdc source topic for the 1st replica table
+    dst_table: "/Root/test/table1_rep" # Path of the 1st replica table (should exist and have compatible schema)
+  - src_topic: "producer2/cf1"         # Path of the cdc source topic for the 2nd replica table
+    consumer: "c1"                     # Topic consumer name in a cdc source topic for the 2nd replica table
+    dst_table: "/Root/test/table2_rep" # Path of the 2nd replica table (should exist and have compatible schema)
 
 ## Max timeout to analise missed heartbeat in seconds. If we don't get quorum during this interval
 ## the warning message will be written to the log.
@@ -40,3 +43,8 @@ max_expected_heartbeat_interval: 10
 
 ## Log level (values "debug", "info", "warn", "error")
 log_level: "debug"
+
+## Command topic. In this topic you may post events to suggest aardappel what to do if it stops because cannot process some changes consistently
+cmd_topic:
+  path: aardappel_command
+  consumer: c1
