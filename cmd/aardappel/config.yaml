@@ -24,7 +24,7 @@ dst_oauth2_file: "/opt/aardappel/secrets/dst-sa/key.json"
 ## the table will be created in the destination database if absent.
 ## Usually any name which is not clashed with existed tables.
 state_table: "aardappel_state"
-# Instance of replication process. Each aardappel instance sharing the same state stable should have aunique instance id to avoid mixing states.
+# Instance of replication process. Each aardappel process sharing the same state table should have a unique instance id to avoid mixing states.
 instance_id: "0"
 
 ## Replica tables and cdc sources. Transactions will be applied consistently between those tables. Multiple tables can be specified.
