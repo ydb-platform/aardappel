@@ -22,7 +22,9 @@ import (
 	"go.uber.org/zap"
 	"log"
 	"os"
+	"os/signal"
 	"reflect"
+	"syscall"
 	"time"
 )
 
@@ -59,6 +61,10 @@ func DoReplication(ctx context.Context, prc *processor.Processor, dstTables []*d
 	passed := time.Now().UnixMilli()
 	stats, err := prc.DoReplication(ctx, dstTables, lockExecutor)
 	if err != nil {
+		if ctx.Err() != nil {
+			xlog.Error(ctx, "Context cancelled or expired during replication step", zap.Error(err))
+			return
+		}
 		xlog.Fatal(ctx, "Unable to perform replication without error", zap.Error(err))
 	}
 	passed = time.Now().UnixMilli() - passed
@@ -182,6 +188,15 @@ func main() {
 
 	ctx := context.Background()
 
+	ctx, cancel := context.WithCancel(ctx)
+
+	signalChannel := make(chan os.Signal, 1)
+	signal.Notify(signalChannel, syscall.SIGINT, syscall.SIGTERM, syscall.SIGHUP)
+	defer func() {
+		signal.Stop(signalChannel)
+		cancel()
+	}()
+
 	// Setup config
 	config, err := configInit.InitConfig(ctx, confPath)
 	if err != nil {
@@ -191,6 +206,15 @@ func main() {
 	// Setup logging
 	logger := xlog.SetupLogging(config.LogLevel)
 	xlog.SetInternalLogger(logger)
+
+	go func() {
+		select {
+		case sig := <-signalChannel:
+			xlog.Info(ctx, "Got OS signal, stopping aardappel....", zap.String("signal name", sig.String()))
+			cancel()
+		}
+	}()
+
 	defer logger.Sync()
 
 	confStr, err := config.ToString()
@@ -258,6 +282,9 @@ func main() {
 		select {
 		case lockCtx := <-lockChannel:
 			// Connect to YDB
+			if lockCtx == nil {
+				goto exit
+			}
 			srcDb, err := ydb.Open(lockCtx, config.SrcConnectionString, srcOpts...)
 			if err != nil {
 				xlog.Fatal(ctx, "Unable to connect to src cluster", zap.Error(err))
@@ -268,4 +295,6 @@ func main() {
 			xlog.Info(ctx, "unable to get lock, other instance of aardappel is running")
 		}
 	}
+exit:
+	xlog.Info(ctx, "aardappel has been shutted down successfully ")
 }
