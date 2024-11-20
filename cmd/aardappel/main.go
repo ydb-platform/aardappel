@@ -278,12 +278,15 @@ func main() {
 		time.Duration(config.MaxExpHbInterval*2)*time.Second)
 
 	lockChannel := locker.LockerContext(ctx)
-	for {
+	var cont bool
+	cont = true
+	for cont {
 		select {
-		case lockCtx := <-lockChannel:
+		case lockCtx, ok := <-lockChannel:
 			// Connect to YDB
-			if lockCtx == nil {
-				goto exit
+			if ok != true {
+				cont = false
+				continue
 			}
 			srcDb, err := ydb.Open(lockCtx, config.SrcConnectionString, srcOpts...)
 			if err != nil {
@@ -295,6 +298,6 @@ func main() {
 			xlog.Info(ctx, "unable to get lock, other instance of aardappel is running")
 		}
 	}
-exit:
+
 	xlog.Info(ctx, "aardappel has been shutted down successfully ")
 }
