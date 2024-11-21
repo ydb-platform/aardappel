@@ -280,6 +280,7 @@ func main() {
 	lockChannel := locker.LockerContext(ctx)
 	var cont bool
 	cont = true
+	var lockErrCnt uint32
 	for cont {
 		select {
 		case lockCtx, ok := <-lockChannel:
@@ -288,6 +289,7 @@ func main() {
 				cont = false
 				continue
 			}
+			lockErrCnt = 0
 			srcDb, err := ydb.Open(lockCtx, config.SrcConnectionString, srcOpts...)
 			if err != nil {
 				xlog.Fatal(ctx, "Unable to connect to src cluster", zap.Error(err))
@@ -295,9 +297,19 @@ func main() {
 			xlog.Debug(ctx, "YDB src opened")
 			doMain(lockCtx, config, srcDb, dstDb, locker, mon)
 		case <-time.After(5 * time.Second):
+			if lockErrCnt == 10 {
+				cont = false
+				continue
+			} else {
+				lockErrCnt++
+			}
 			xlog.Info(ctx, "unable to get lock, other instance of aardappel is running")
 		}
 	}
 
-	xlog.Info(ctx, "aardappel has been shutted down successfully ")
+	if lockErrCnt != 0 {
+		xlog.Error(ctx, "aardappel has been shutted down after multiple getting lock errors")
+	} else {
+		xlog.Info(ctx, "aardappel has been shutted down successfully ")
+	}
 }
