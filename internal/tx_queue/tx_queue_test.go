@@ -65,7 +65,7 @@ func TestPriorityQueue(t *testing.T) {
 		CreateTxData(8, 2)}, actual)
 }
 
-func CheckPopTxs(t *testing.T, step uint64, upperIndex int) {
+func CheckPopTxs(t *testing.T, step uint64, txId uint64, upperIndex int) {
 	var txQueue = NewTxQueue()
 	item82 := CreateTxData(8, 2)
 	item81 := CreateTxData(8, 1)
@@ -82,18 +82,26 @@ func CheckPopTxs(t *testing.T, step uint64, upperIndex int) {
 		txQueue.PushTx(pushOrder[i])
 	}
 	if upperIndex == -1 {
-		assert.Empty(t, txQueue.PopTxsByStep(step))
+		assert.Empty(t, txQueue.PopTxsByPosition(types.Position{step, txId}))
 		return
 	}
-	assert.Equal(t, expectedOrder[0:upperIndex], txQueue.PopTxsByStep(step))
+	assert.Equal(t, expectedOrder[0:upperIndex], txQueue.PopTxsByPosition(types.Position{step, txId}))
 }
 
 func TestTxQueueGet(t *testing.T) {
-	CheckPopTxs(t, 0, -1)
-	CheckPopTxs(t, 1, -1)
-	CheckPopTxs(t, 2, 2)
-	CheckPopTxs(t, 3, 4)
-	CheckPopTxs(t, 4, 6)
-	CheckPopTxs(t, 8, 6)
-	CheckPopTxs(t, 9, 8)
+	CheckPopTxs(t, 0, 0, -1)
+	CheckPopTxs(t, 1, 0, -1)
+	CheckPopTxs(t, 2, 0, 2)
+	CheckPopTxs(t, 3, 0, 4)
+	CheckPopTxs(t, 4, 0, 6)
+	CheckPopTxs(t, 8, 0, 6)
+	CheckPopTxs(t, 9, 0, 8)
+
+	CheckPopTxs(t, 1, 1, 0)
+	CheckPopTxs(t, 1, 2, 1)
+	CheckPopTxs(t, 1, 3, 2)
+
+	CheckPopTxs(t, 2, 1, 2)
+	CheckPopTxs(t, 2, 2, 4)
+	CheckPopTxs(t, 2, 3, 4)
 }

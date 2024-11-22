@@ -79,6 +79,7 @@ func ParseHBData(ctx context.Context, jsonData []byte, streamId types.StreamId) 
 	var data types.HbData
 	data.StreamId = streamId
 	data.Step = resolvedData.Resolved[0]
+	data.TxId = resolvedData.Resolved[1]
 
 	return data, nil
 }

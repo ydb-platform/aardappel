@@ -31,12 +31,30 @@ const STAGE_UNDEFINED = "UNDEFINED"
 const STAGE_INITIAL_SCAN = "INITIAL_SCAN"
 const STAGE_RUN = "RUN"
 
+type AtopmicPos struct {
+	value atomic.Value
+}
+
+func NewAtopmicPos(value types.Position) *AtopmicPos {
+	a := &AtopmicPos{}
+	a.value.Store(value) // Инициализируем значение
+	return a
+}
+
+func (pos *AtopmicPos) Load() types.Position {
+	return pos.value.Load().(types.Position)
+}
+
+func (pos *AtopmicPos) Store(value types.Position) {
+	pos.value.Store(value)
+}
+
 type Processor struct {
 	txChannel       chan func() error
 	hbTracker       *hb_tracker.HeartBeatTracker
 	txQueue         *tx_queue.TxQueue
 	dstServerClient table.Client
-	lastStep        atomic.Uint64
+	lastPosition    AtopmicPos
 	stateStoreQuery string
 	stateTablePath  string
 	instanceId      string
@@ -51,7 +69,7 @@ type RequestStats struct {
 
 type ReplicationStats struct {
 	ModificationsCount      int
-	LastHeartBeat           uint64
+	LastHeartBeat           types.Position
 	CommitDurationMs        int64
 	RequestSize             int
 	QuorumWaitingDurationMs int64
@@ -112,7 +130,7 @@ func (this *CmdQueueConflictHandler) Handle(ctx context.Context, streamTopicPath
 
 	reader, err := this.Topic.StartReader(this.Consumer, topicoptions.ReadTopic(this.Path))
 	if err != nil {
-		xlog.Fatal(ctx, "Unable to read from cpecifyed command topic",
+		xlog.Fatal(ctx, "Unable to read from specified command topic",
 			zap.String("consumer", this.Consumer),
 			zap.String("src_topic", this.Path),
 			zap.Error(err))
@@ -128,7 +146,7 @@ func (this *CmdQueueConflictHandler) Handle(ctx context.Context, streamTopicPath
 	serializeKey := func(key []json.RawMessage) (string, error) {
 		data, err := json.Marshal(key)
 		if err != nil {
-			return "underfined", err
+			return "undefined", err
 		}
 		return string(data), nil
 	}
@@ -213,8 +231,8 @@ func (e *NoInstance) Error() string {
 }
 
 type ReplicationState struct {
-	stage string
-	step  uint64
+	stage    string
+	position types.Position
 }
 
 func selectReplicationState(ctx context.Context, client table.Client, stateTablePath string, instanceId string) (ReplicationState, error) {
@@ -223,7 +241,7 @@ func selectReplicationState(ctx context.Context, client table.Client, stateTable
 	)
 	stateQuery := fmt.Sprintf("SELECT step_id, tx_id, state, stage, last_msg FROM %v WHERE id = $instanceId;", stateTablePath)
 	var step *uint64
-	var tx_id *uint64
+	var txId *uint64
 	var state *string
 	var lastMsg *string
 	var stage *string
@@ -240,7 +258,7 @@ func selectReplicationState(ctx context.Context, client table.Client, stateTable
 			}
 			return res.ScanNamed(
 				named.Optional("step_id", &step),
-				named.Optional("tx_id", &tx_id),
+				named.Optional("tx_id", &txId),
 				named.Optional("state", &state),
 				named.Optional("stage", &stage),
 				named.Optional("last_msg", &lastMsg),
@@ -248,22 +266,22 @@ func selectReplicationState(ctx context.Context, client table.Client, stateTable
 		})
 
 	if err != nil {
-		return ReplicationState{step: 0, stage: STAGE_UNDEFINED}, fmt.Errorf("unable to get state table: %v %w", stateTablePath, err)
+		return ReplicationState{position: types.Position{0, 1}, stage: STAGE_UNDEFINED}, fmt.Errorf("unable to get state table: %v %w", stateTablePath, err)
 	}
 
 	if state == nil {
-		return ReplicationState{step: 0, stage: STAGE_UNDEFINED}, fmt.Errorf("State is not set in the state table")
+		return ReplicationState{position: types.Position{0, 1}, stage: STAGE_UNDEFINED}, fmt.Errorf("State is not set in the state table")
 	}
 
-	if step == nil || tx_id == nil {
-		return ReplicationState{step: 0, stage: STAGE_UNDEFINED}, fmt.Errorf("virtual timestamp is not set in the state table")
+	if step == nil || txId == nil {
+		return ReplicationState{position: types.Position{0, 1}, stage: STAGE_UNDEFINED}, fmt.Errorf("virtual timestamp is not set in the state table")
 	}
 
 	if *state != REPLICATION_OK {
-		return ReplicationState{step: 0, stage: STAGE_UNDEFINED}, fmt.Errorf("Stored replication status is not ok. last_msg: %s, state: %s", *lastMsg, *state)
+		return ReplicationState{position: types.Position{0, 1}, stage: STAGE_UNDEFINED}, fmt.Errorf("Stored replication status is not ok. last_msg: %s, state: %s", *lastMsg, *state)
 	}
 
-	return ReplicationState{step: *step, stage: *stage}, err
+	return ReplicationState{position: types.Position{*step, *txId}, stage: *stage}, err
 }
 
 func NewProcessor(ctx context.Context, total int, stateTablePath string, client table.Client, instanceId string) (*Processor, error) {
@@ -285,9 +303,11 @@ func NewProcessor(ctx context.Context, total int, stateTablePath string, client 
 	if err != nil {
 		return nil, err
 	}
-	p.lastStep.Store(state.step)
+	p.lastPosition.Store(state.position)
 	p.stage = state.stage
-	xlog.Debug(ctx, "processor created", zap.Uint64("last step", state.step))
+	xlog.Debug(ctx, "processor created",
+		zap.Uint64("last step:", state.position.Step),
+		zap.Uint64("last tx_id:", state.position.TxId))
 	return &p, err
 }
 
@@ -307,25 +327,28 @@ func (processor *Processor) Enqueue(ctx context.Context, fn func() error) {
 
 func (processor *Processor) EnqueueHb(ctx context.Context, hb types.HbData) {
 	// Skip all before we already processed
-	lastStep := processor.lastStep.Load()
-	xlog.Debug(ctx, "got hb", zap.Uint64("step", hb.Step),
+	lastPosition := processor.lastPosition.Load()
+	xlog.Debug(ctx, "got hb", zap.Uint64("step", hb.Step), zap.Uint64("tx_id", hb.TxId),
 		zap.Uint32("reader_id", hb.StreamId.ReaderId),
-		zap.Int64("partitionId:", hb.StreamId.PartitionId),
-		zap.Bool("willSkip", hb.Step < lastStep))
-	if hb.Step < lastStep {
+		zap.Int64("partition_id:", hb.StreamId.PartitionId),
+		zap.Bool("willSkip", types.NewPosition(hb).LessThan(lastPosition)))
+	if types.NewPosition(hb).LessThan(lastPosition) {
 		err := hb.CommitTopic()
 		xlog.Debug(ctx, "skip old hb",
 			zap.Uint64("step", hb.Step),
+			zap.Uint64("tx_id", hb.TxId),
 			zap.NamedError("topic commit error", err))
 		return
 	}
 	fn := func() error {
-		step := processor.lastStep.Load()
-		if hb.Step < step {
-			xlog.Warn(ctx, "suspicious behaviour, hb with step less then our last committed step has been "+
+		lastPosition := processor.lastPosition.Load()
+		if lastPosition.LessThan(*types.NewPosition(hb)) {
+			xlog.Warn(ctx, "suspicious behaviour, hb with timestamp less then our last committed timestamp has been "+
 				"enqueued just during our commit",
 				zap.Uint64("step", hb.Step),
-				zap.Uint64("ourStep", step))
+				zap.Uint64("tx_id", hb.TxId),
+				zap.Uint64("our_step", lastPosition.Step),
+				zap.Uint64("our_tx_id", lastPosition.TxId))
 			return nil
 		}
 		return processor.hbTracker.AddHb(hb)
@@ -353,25 +376,28 @@ func (processor *Processor) SaveReplicationState(ctx context.Context, status str
 
 func (processor *Processor) EnqueueTx(ctx context.Context, tx types.TxData) {
 	// Skip all before we already processed
-	lastStep := processor.lastStep.Load()
+	lastPosition := processor.lastPosition.Load()
 	xlog.Debug(ctx, "got tx", zap.Uint64("step", tx.Step),
 		zap.Uint64("txId", tx.TxId),
 		zap.Uint32("reader_id", tx.TableId),
-		zap.Bool("willSkip", tx.Step < lastStep))
-	if tx.Step < lastStep {
+		zap.Bool("willSkip", (types.Position{tx.Step, tx.TxId}.LessThan(lastPosition))))
+	if (types.Position{tx.Step, tx.TxId}.LessThan(lastPosition)) {
 		err := tx.CommitTopic()
 		xlog.Debug(ctx, "skip old tx",
 			zap.Uint64("step", tx.Step),
+			zap.Uint64("tx_id", tx.TxId),
 			zap.NamedError("topic commit error", err))
 		return
 	}
 	fn := func() error {
-		step := processor.lastStep.Load()
-		if tx.Step < step {
-			xlog.Warn(ctx, "suspicious behaviour, tx with step less then our last committed step has been"+
+		lastPosition := processor.lastPosition.Load()
+		if (types.Position{tx.Step, tx.TxId}.LessThan(lastPosition)) {
+			xlog.Warn(ctx, "suspicious behaviour, tx with timestamp less then our last committed timestamp has been"+
 				"enqueued just during our commit",
 				zap.Uint64("step", tx.Step),
-				zap.Uint64("ourStep", step))
+				zap.Uint64("tx_id", tx.TxId),
+				zap.Uint64("our_step", lastPosition.Step),
+				zap.Uint64("our_tx_id", lastPosition.TxId))
 			return nil
 		}
 		processor.txQueue.PushTx(tx)
@@ -441,21 +467,25 @@ func (processor *Processor) getHbQuorum(ctx context.Context) (*types.HbData, err
 	}
 	hb, ok := processor.hbTracker.GetQuorum()
 	if ok {
-		xlog.Debug(ctx, "Got hb quorum", zap.Any("step", hb.Step))
+		xlog.Debug(ctx, "Got hb quorum", zap.Any("step", hb.Step), zap.Any("tx_id", hb.TxId))
 		return &hb, nil
 	}
 	return nil, nil
 }
 
 func (processor *Processor) getHbQuorumAfter(ctx context.Context, hb types.HbData) (*types.HbData, error) {
-	// Try to get quorum that will be large then hb.Step.
+	// Try to get quorum that will be large then hb timestamp.
 	err := processor.doEvent(ctx)
 	if err != nil {
 		return nil, err
 	}
 	resHb, ok := processor.hbTracker.GetQuorumAfter(hb)
 	if ok {
-		xlog.Debug(ctx, "Got hb quorum after", zap.Any("res_step", resHb.Step), zap.Any("after_step", hb.Step))
+		xlog.Debug(ctx, "Got hb quorum after",
+			zap.Any("res_step", resHb.Step),
+			zap.Any("res_tx_id", resHb.TxId),
+			zap.Any("after_step", hb.Step),
+			zap.Any("after_tx_id", hb.TxId))
 		return &resHb, nil
 	}
 	return nil, nil
@@ -478,7 +508,7 @@ func (processor *Processor) waitHbQuorum(ctx context.Context) (types.HbData, err
 }
 
 func (processor *Processor) waitSyncHbQuorum(ctx context.Context, hb types.HbData) (types.HbData, error) {
-	// Wait quorum that will be large then hb.Step.
+	// Wait quorum that will be large then hb timestamp.
 	for ctx.Err() == nil {
 		resHb, err := processor.getHbQuorumAfter(ctx, hb)
 		if err != nil {
@@ -495,7 +525,7 @@ func (processor *Processor) waitSyncHbQuorum(ctx context.Context, hb types.HbDat
 
 func (processor *Processor) getSyncHbQuorum(ctx context.Context) (*types.HbData, error) {
 	// Get quorum after that initial scan will be finished and database will be consistent.
-	// This quorum is the first larger quorum than the max hb step in the first quorum obtained in initial scan stage.
+	// This quorum is the first larger quorum than the max hb timestamp in the first quorum obtained in initial scan stage.
 	err := processor.doEvent(ctx)
 	if err != nil {
 		return nil, err
@@ -518,13 +548,13 @@ func (processor *Processor) DoInitialScan(ctx context.Context, dstTables []*dst_
 	quorumWaitingDuration := time.Now().UnixMilli()
 	if processor.initialScanPos == nil {
 		// Trying to get a quorum, up to which there will be an initial scan state.
-		// This quorum should be greater than the max hb step in the first quorum obtained during the initial scan
+		// This quorum should be greater than the max hb timestamp in the first quorum obtained during the initial scan
 		hb, err := processor.getSyncHbQuorum(ctx)
 		if err != nil {
 			return nil, err
 		}
 		if hb != nil {
-			xlog.Debug(ctx, "Got sync hb", zap.Any("step", hb.Step))
+			xlog.Debug(ctx, "Got sync hb", zap.Any("step", hb.Step), zap.Any("tx_id", hb.TxId))
 		}
 		// Save this quorum if it is existed
 		processor.initialScanPos = hb
@@ -534,9 +564,12 @@ func (processor *Processor) DoInitialScan(ctx context.Context, dstTables []*dst_
 	maxCount := 1000
 	var txs []types.TxData
 	if processor.initialScanPos != nil {
-		// We should push transactions smaller than initialScanPos.Step and no more than maxCount transactions
-		xlog.Debug(ctx, "Trying to pop tx until", zap.Any("step", processor.initialScanPos.Step), zap.Any("max_count", maxCount))
-		txs = processor.txQueue.PopTxsByCountAndStep(processor.initialScanPos.Step, maxCount)
+		// We should push transactions smaller than initialScanPos timestamp and no more than maxCount transactions
+		xlog.Debug(ctx, "Trying to pop tx until",
+			zap.Any("step", processor.initialScanPos.Step),
+			zap.Any("tx_id", processor.initialScanPos.TxId),
+			zap.Any("max_count", maxCount))
+		txs = processor.txQueue.PopTxsByCountAndPosition(*types.NewPosition(*processor.initialScanPos), maxCount)
 	} else {
 		// We can push no more than maxCount transactions
 		xlog.Debug(ctx, "Trying to pop tx until", zap.Any("max_count", maxCount))
@@ -568,14 +601,14 @@ func (processor *Processor) DoInitialScan(ctx context.Context, dstTables []*dst_
 
 	if lastInitialScanIt {
 		err := lockExecutor(func(ctx context.Context, ts table.Session, txr table.Transaction) error {
-			return processor.PushAsSingleTx(ctx, query, txr, types.Position{Step: processor.initialScanPos.Step, TxId: 0}, STAGE_RUN)
+			return processor.PushAsSingleTx(ctx, query, txr, *types.NewPosition(*processor.initialScanPos), STAGE_RUN)
 		})
 		commitDuration = time.Now().UnixMilli() - commitDuration
 		if err != nil {
 			return nil, fmt.Errorf("%w; Unable to push tx with state", err)
 		}
 
-		processor.lastStep.Store(processor.initialScanPos.Step)
+		processor.lastPosition.Store(*types.NewPosition(*processor.initialScanPos))
 		processor.stage = STAGE_RUN
 	} else if len(txs) != 0 {
 		err := lockExecutor(func(ctx context.Context, ts table.Session, txr table.Transaction) error {
@@ -595,7 +628,9 @@ func (processor *Processor) DoInitialScan(ctx context.Context, dstTables []*dst_
 	}
 
 	if lastInitialScanIt {
-		xlog.Debug(ctx, "commit hb in topic", zap.Uint64("step", processor.initialScanPos.Step))
+		xlog.Debug(ctx, "commit hb in topic",
+			zap.Uint64("step", processor.initialScanPos.Step),
+			zap.Uint64("tx_id", processor.initialScanPos.TxId))
 		err := processor.initialScanPos.CommitTopic()
 		if err != nil {
 			return nil, fmt.Errorf("%w; Unable to commit topic fot hb", err)
@@ -603,7 +638,7 @@ func (processor *Processor) DoInitialScan(ctx context.Context, dstTables []*dst_
 	}
 
 	return &ReplicationStats{requestStats.ModificationsCount,
-		0,
+		types.Position{0, 0},
 		commitDuration,
 		requestStats.RequestSize,
 		quorumWaitingDuration}, nil
@@ -618,8 +653,8 @@ func (processor *Processor) FormatTx(ctx context.Context) (*TxBatch, int64, erro
 	}
 
 	// Here we have heartbeat and filled TxQueue - ready to format TX
-	xlog.Debug(ctx, "Trying to pop tx until", zap.Any("step", hb.Step))
-	txs := processor.txQueue.PopTxsByStep(hb.Step)
+	xlog.Debug(ctx, "Trying to pop tx until", zap.Any("step", hb.Step), zap.Any("tx_id", hb.TxId))
+	txs := processor.txQueue.PopTxsByPosition(*types.NewPosition(hb))
 	processor.hbTracker.Commit(hb)
 	for _, data := range txs {
 		xlog.Debug(ctx, "Parsed tx data",
@@ -670,7 +705,7 @@ func (processor *Processor) DoReplication(ctx context.Context, dstTables []*dst_
 	commitDuration := time.Now().UnixMilli()
 
 	err = lockExecutor(func(ctx context.Context, ts table.Session, txr table.Transaction) error {
-		return processor.PushAsSingleTx(ctx, query, txr, types.Position{Step: batch.Hb.Step, TxId: 0}, STAGE_RUN)
+		return processor.PushAsSingleTx(ctx, query, txr, *types.NewPosition(batch.Hb), STAGE_RUN)
 	})
 
 	commitDuration = time.Now().UnixMilli() - commitDuration
@@ -679,7 +714,7 @@ func (processor *Processor) DoReplication(ctx context.Context, dstTables []*dst_
 		return nil, fmt.Errorf("%w; Unable to push tx", err)
 	}
 
-	processor.lastStep.Store(batch.Hb.Step)
+	processor.lastPosition.Store(*types.NewPosition(batch.Hb))
 
 	for i := 0; i < len(batch.TxData); i++ {
 		err := batch.TxData[i].CommitTopic()
@@ -688,13 +723,15 @@ func (processor *Processor) DoReplication(ctx context.Context, dstTables []*dst_
 		}
 	}
 
-	xlog.Debug(ctx, "commit hb in topic", zap.Uint64("step", batch.Hb.Step))
+	xlog.Debug(ctx, "commit hb in topic",
+		zap.Uint64("step", batch.Hb.Step),
+		zap.Uint64("tx_id", batch.Hb.TxId))
 	err = batch.Hb.CommitTopic()
 	if err != nil {
 		return nil, fmt.Errorf("%w; Unable to commit topic fot hb", err)
 	}
 	return &ReplicationStats{requestStats.ModificationsCount,
-		batch.Hb.Step,
+		*types.NewPosition(batch.Hb),
 		commitDuration,
 		requestStats.RequestSize,
 		quorumWaitingDuration}, nil

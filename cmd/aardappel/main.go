@@ -77,7 +77,8 @@ func DoReplication(ctx context.Context, prc *processor.Processor, dstTables []*d
 	}
 	xlog.Info(ctx, "Replication step ok", zap.Int("modifications", stats.ModificationsCount),
 		zap.Float32("mps", perSecond),
-		zap.Uint64("last quorum HB", stats.LastHeartBeat),
+		zap.Uint64("last quorum HB step", stats.LastHeartBeat.Step),
+		zap.Uint64("last quorum HB tx_id", stats.LastHeartBeat.TxId),
 		zap.Float32("commit duration", float32(stats.CommitDurationMs)/1000),
 		zap.Int("request size", stats.RequestSize),
 		zap.Float32("quorum waiting duration", float32(stats.QuorumWaitingDurationMs)/1000))

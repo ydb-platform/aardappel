@@ -83,12 +83,12 @@ func (ht *HeartBeatTracker) AddHb(data types.HbData) error {
 	defer ht.lock.Unlock()
 	hb, ok := ht.streams[data.StreamId]
 	if ok {
-		if hb.Step < data.Step {
+		if types.NewPosition(hb).LessThan(*types.NewPosition(data)) {
 			// Got new heartbeat for stream - we can commit previous one
 			err := hb.CommitTopic()
 			if err != nil {
-				return fmt.Errorf("unable to commit topic during update HB %w, stepId: %d", err,
-					hb.Step)
+				return fmt.Errorf("unable to commit topic during update HB %w, stepId: %d, txId: %d", err,
+					hb.Step, hb.TxId)
 			}
 			hb = data
 		}
@@ -122,7 +122,7 @@ func (ht *HeartBeatTracker) GetQuorum() (types.HbData, bool) {
 			resHb = v
 			inited = true
 		} else {
-			if v.Step < resHb.Step {
+			if types.NewPosition(v).LessThan(*types.NewPosition(resHb)) {
 				resHb = v
 			}
 		}
@@ -140,7 +140,7 @@ func (ht *HeartBeatTracker) GetMaxHb() types.HbData {
 			resHb = v
 			inited = true
 		} else {
-			if v.Step > resHb.Step {
+			if types.NewPosition(resHb).LessThan(*types.NewPosition(v)) {
 				resHb = v
 			}
 		}
@@ -155,7 +155,7 @@ func (ht *HeartBeatTracker) GetQuorumAfter(hb types.HbData) (types.HbData, bool)
 		return resHb, false
 	}
 
-	if resHb.Step > hb.Step {
+	if types.NewPosition(hb).LessThan(*types.NewPosition(resHb)) {
 		return resHb, true
 	}
 
@@ -169,7 +169,7 @@ func (ht *HeartBeatTracker) Commit(data types.HbData) bool {
 	if !ok {
 		return true
 	}
-	if hb.Step > data.Step {
+	if types.NewPosition(data).LessThan(*types.NewPosition(hb)) {
 		return false
 	} else {
 		delete(ht.streams, data.StreamId)
