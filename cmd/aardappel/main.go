@@ -172,6 +172,9 @@ func doMain(ctx context.Context, config configInit.Config, srcDb *ydb.Driver, ds
 	}
 
 	lockExecutor := func(fn func(context.Context, table.Session, table.Transaction) error) error {
+		if ctx.Err() != nil {
+			return ctx.Err()
+		}
 		return locker.ExecuteUnderLock(ctx, fn)
 	}
 
