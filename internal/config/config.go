@@ -24,6 +24,10 @@ type CmdQueue struct {
 	Consumer string `yaml:"consumer"`
 }
 
+type KeyFilter struct {
+	Path string `yaml:"table_path""`
+}
+
 type Config struct {
 	SrcConnectionString string     `yaml:"src_connection_string"`
 	SrcClientBalancer   bool       `yaml:"src_client_balancer"`
@@ -40,6 +44,7 @@ type Config struct {
 	LogLevel            string     `yaml:"log_level"`
 	MonServer           *MonServer `yaml:"mon_server"`
 	CmdQueue            *CmdQueue  `yaml:"cmd_queue"`
+	KeyFilter           *KeyFilter `yaml:"key_filter"`
 }
 
 func (config Config) ToString() (string, error) {

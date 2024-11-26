@@ -32,6 +32,10 @@ type DstTable struct {
 	tableInfo TableMetaInfo
 }
 
+func (d *DstTable) GetTablePath() string {
+	return d.tablePath
+}
+
 func NewDstTable(client table.Client, tablePath string) *DstTable {
 	var dstTable DstTable
 	dstTable.client = client
