@@ -35,9 +35,8 @@ type AtopmicPos struct {
 	value atomic.Value
 }
 
-func NewAtopmicPos(value types.Position) *AtopmicPos {
+func NewAtopmicPos() *AtopmicPos {
 	a := &AtopmicPos{}
-	a.value.Store(value) // Инициализируем значение
 	return a
 }
 
@@ -54,7 +53,7 @@ type Processor struct {
 	hbTracker       *hb_tracker.HeartBeatTracker
 	txQueue         *tx_queue.TxQueue
 	dstServerClient table.Client
-	lastPosition    AtopmicPos
+	lastPosition    *AtopmicPos
 	stateStoreQuery string
 	stateTablePath  string
 	instanceId      string
@@ -293,6 +292,7 @@ func NewProcessor(ctx context.Context, total int, stateTablePath string, client 
 	p.stateStoreQuery = createStateStoreQuery(stateTablePath)
 	p.stateTablePath = stateTablePath
 	p.instanceId = instanceId
+	p.lastPosition = NewAtopmicPos()
 
 	if len(instanceId) == 0 {
 		return nil, errors.New("instance_id must be set")
@@ -342,7 +342,7 @@ func (processor *Processor) EnqueueHb(ctx context.Context, hb types.HbData) {
 	}
 	fn := func() error {
 		lastPosition := processor.lastPosition.Load()
-		if lastPosition.LessThan(*types.NewPosition(hb)) {
+		if types.NewPosition(hb).LessThan(lastPosition) {
 			xlog.Warn(ctx, "suspicious behaviour, hb with timestamp less then our last committed timestamp has been "+
 				"enqueued just during our commit",
 				zap.Uint64("step", hb.Step),
