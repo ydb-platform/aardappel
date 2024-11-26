@@ -144,7 +144,7 @@ func doMain(ctx context.Context, config configInit.Config, srcDb *ydb.Driver, ds
 			dstDb.Topic())
 	}
 
-	prc, err := processor.NewProcessor(ctx, totalPartitions, config.StateTable, dstDb.Table(), config.InstanceId)
+	prc, err := processor.NewProcessor(ctx, totalPartitions, config.StateTable, dstDb.Table(), config.InstanceId, config.KeyFilter)
 	if err != nil {
 		xlog.Fatal(ctx, "Unable to create processor", zap.Error(err))
 	}

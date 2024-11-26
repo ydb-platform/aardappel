@@ -1,10 +1,12 @@
 package processor
 
 import (
+	"aardappel/internal/config"
 	"aardappel/internal/dst_table"
 	"aardappel/internal/hb_tracker"
 	"aardappel/internal/tx_queue"
 	"aardappel/internal/types"
+	"aardappel/internal/util/key_serializer"
 	"aardappel/internal/util/xlog"
 	"context"
 	"encoding/json"
@@ -59,6 +61,7 @@ type Processor struct {
 	instanceId      string
 	stage           string
 	initialScanPos  *types.HbData
+	keyFilter       KeyFilter
 }
 
 type RequestStats struct {
@@ -283,7 +286,7 @@ func selectReplicationState(ctx context.Context, client table.Client, stateTable
 	return ReplicationState{position: types.Position{*step, *txId}, stage: *stage}, err
 }
 
-func NewProcessor(ctx context.Context, total int, stateTablePath string, client table.Client, instanceId string) (*Processor, error) {
+func NewProcessor(ctx context.Context, total int, stateTablePath string, client table.Client, instanceId string, filter *config.KeyFilter) (*Processor, error) {
 	var p Processor
 	p.hbTracker = hb_tracker.NewHeartBeatTracker(total)
 	p.txChannel = make(chan func() error, 1000)
@@ -305,9 +308,20 @@ func NewProcessor(ctx context.Context, total int, stateTablePath string, client 
 	}
 	p.lastPosition.Store(state.position)
 	p.stage = state.stage
+
+	if filter != nil {
+		p.keyFilter, err = NewYdbMemoryKeyFilter(ctx, &p.dstServerClient, filter.Path)
+		if err != nil {
+			xlog.Error(ctx, "unable to construct key filter", zap.Error(err))
+			return nil, err
+		}
+		xlog.Debug(ctx, "key filter created", zap.Uint64("blocked keys", p.keyFilter.GetBlockedKeysCount()))
+	}
+
 	xlog.Debug(ctx, "processor created",
 		zap.Uint64("last step:", state.position.Step),
 		zap.Uint64("last tx_id:", state.position.TxId))
+
 	return &p, err
 }
 
@@ -414,9 +428,19 @@ func (processor *Processor) getQueryRequestSize(query dst_table.PushQuery) int {
 	return size
 }
 
+func (processor *Processor) isSkippedByFilterAction(ctx context.Context, tx *types.TxData, tablePath string) bool {
+	if processor.keyFilter == nil {
+		return false
+	}
+	return processor.keyFilter.Filter(ctx, key_serializer.Serialize(tx.KeyValues, tablePath, key_serializer.FmtRaw))
+}
+
 func (processor *Processor) assignTxsToDstTables(ctx context.Context, txs []types.TxData, dstTables []*dst_table.DstTable) (dst_table.PushQuery, RequestStats, error) {
 	txDataPerTable := make([][]types.TxData, len(dstTables))
 	for i := 0; i < len(txs); i++ {
+		if processor.isSkippedByFilterAction(ctx, &txs[i], dstTables[txs[i].TableId].GetTablePath()) {
+			continue
+		}
 		txDataPerTable[txs[i].TableId] = append(txDataPerTable[txs[i].TableId], txs[i])
 	}
 	if len(txDataPerTable) != len(dstTables) {
