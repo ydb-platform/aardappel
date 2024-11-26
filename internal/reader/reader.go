@@ -28,10 +28,10 @@ func serializeKey(key []json.RawMessage) string {
 	return string(data)
 }
 
-func WriteAllProblemTxsUntilNextHb(ctx context.Context, topicPath string, readerId uint32, reader *topicreader.Reader, channel processor.Channel, lastHb map[int64]uint64, hb uint64, partsCount int) {
+func WriteAllProblemTxsUntilNextHb(ctx context.Context, topicPath string, readerId uint32, reader *topicreader.Reader, channel processor.Channel, lastHb map[int64]types.Position, hb types.Position, partsCount int) {
 	var partsIsDone map[int64]bool
 	for part, partHb := range lastHb {
-		if partHb > hb {
+		if hb.LessThan(partHb) {
 			partsIsDone[part] = true
 		}
 	}
@@ -60,10 +60,10 @@ func WriteAllProblemTxsUntilNextHb(ctx context.Context, topicPath string, reader
 				return
 			}
 
-			if partHb, ok := lastHb[msg.PartitionID()]; ok && data.Step < partHb {
-				errString := fmt.Sprintf("Unexpected step_id in stream, last hb step_id: %v,"+
+			if partHb, ok := lastHb[msg.PartitionID()]; ok && (types.Position{data.Step, data.TxId}.LessThan(partHb)) {
+				errString := fmt.Sprintf("Unexpected timestamp in stream, last hb timestamp:[%v,%v],"+
 					"got tx {\"topic\":\"%v\",\"key\":%v,\"ts\":[%v,%v]}",
-					hb, topicPath, serializeKey(data.KeyValues), data.Step, data.TxId)
+					hb.Step, hb.TxId, topicPath, serializeKey(data.KeyValues), data.Step, data.TxId)
 				xlog.Error(ctx, errString)
 			}
 		} else if topicData.Resolved != nil {
@@ -72,8 +72,8 @@ func WriteAllProblemTxsUntilNextHb(ctx context.Context, topicPath string, reader
 				xlog.Error(ctx, "ParseTxData: Error parsing hb data", zap.Error(err))
 				return
 			}
-			lastHb[msg.PartitionID()] = data.Step
-			if data.Step > hb {
+			lastHb[msg.PartitionID()] = *types.NewPosition(data)
+			if hb.LessThan(*types.NewPosition(data)) {
 				partsIsDone[msg.PartitionID()] = true
 			}
 		}
@@ -82,13 +82,10 @@ func WriteAllProblemTxsUntilNextHb(ctx context.Context, topicPath string, reader
 
 func ReadTopic(ctx context.Context, topicPath string, readerId uint32, reader *topicreader.Reader, channel processor.Channel, partsCount int, handler processor.ConflictHandler) {
 	var mu sync.Mutex
-	lastHb := make(map[int64]uint64)
+	lastHb := make(map[int64]types.Position)
 	// returns true - pass item, false - skip item
 	verifyStream := func(part int64, data types.TxData) bool {
-		hb := lastHb[part]
-
-		if hb != 0 && data.Step < hb {
-
+		if hb, ok := lastHb[part]; ok && (types.Position{data.Step, data.TxId}.LessThan(hb)) {
 			key := serializeKey(data.KeyValues)
 
 			if handler == nil {
@@ -112,9 +109,9 @@ func ReadTopic(ctx context.Context, topicPath string, readerId uint32, reader *t
 				}
 			}
 
-			errString := fmt.Sprintf("Unexpected step_id in stream, last hb step_id: %v,"+
+			errString := fmt.Sprintf("Unexpected timestamp in stream, last hb ts:[%v,%v], "+
 				"got tx {\"topic\":\"%v\",\"key\":%v,\"ts\":[%v,%v]}",
-				lastHb[part], topicPath, key, data.Step, data.TxId)
+				lastHb[part].Step, lastHb[part].TxId, topicPath, key, data.Step, data.TxId)
 			stopErr := channel.SaveReplicationState(ctx, processor.REPLICATION_FATAL_ERROR, errString)
 			WriteAllProblemTxsUntilNextHb(ctx, topicPath, readerId, reader, channel, lastHb, hb, partsCount)
 			if stopErr != nil {
@@ -180,7 +177,7 @@ func ReadTopic(ctx context.Context, topicPath string, readerId uint32, reader *t
 				xlog.Error(ctx, "ParseTxData: Error parsing hb data", zap.Error(err))
 				return
 			}
-			lastHb[msg.PartitionID()] = data.Step
+			lastHb[msg.PartitionID()] = *types.NewPosition(data)
 			data.CommitTopic = func() error {
 				mu.Lock()
 				ret := reader.Commit(msg.Context(), msg)

@@ -40,14 +40,26 @@ type StreamId struct {
 	PartitionId int64
 }
 
+// Hb data
+type HbData struct {
+	StreamId    StreamId
+	Step        uint64
+	TxId        uint64
+	CommitTopic func() error
+}
+
 type Position struct {
 	Step uint64
 	TxId uint64
 }
 
-// Hb data
-type HbData struct {
-	StreamId    StreamId
-	Step        uint64
-	CommitTopic func() error
+func NewPosition(hb HbData) *Position {
+	var pos Position
+	pos.Step = hb.Step
+	pos.TxId = hb.TxId
+	return &pos
+}
+
+func (p Position) LessThan(other Position) bool {
+	return p.Step < other.Step || (p.Step == other.Step && p.TxId < other.TxId)
 }

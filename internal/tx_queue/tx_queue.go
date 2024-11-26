@@ -23,18 +23,18 @@ func (txQueue *TxQueue) PushTx(data types.TxData) {
 	heap.Push(txQueue.pq, item)
 }
 
-func (txQueue *TxQueue) PopTxsByStep(step uint64) []types.TxData {
+func (txQueue *TxQueue) PopTxsByPosition(pos types.Position) []types.TxData {
 	result := make([]types.TxData, 0)
-	for txQueue.pq.Get() != nil && txQueue.pq.Get().Step < step {
+	for txQueue.pq.Get() != nil && (types.Position{txQueue.pq.Get().Step, txQueue.pq.Get().TxId}.LessThan(pos)) {
 		item := heap.Pop(txQueue.pq).(QueueItem)
 		result = append(result, item.item)
 	}
 	return result
 }
 
-func (txQueue *TxQueue) PopTxsByCountAndStep(step uint64, maxCount int) []types.TxData {
+func (txQueue *TxQueue) PopTxsByCountAndPosition(pos types.Position, maxCount int) []types.TxData {
 	result := make([]types.TxData, 0)
-	for txQueue.pq.Get() != nil && len(result) < maxCount && txQueue.pq.Get().Step < step {
+	for txQueue.pq.Get() != nil && len(result) < maxCount && (types.Position{txQueue.pq.Get().Step, txQueue.pq.Get().TxId}.LessThan(pos)) {
 		item := heap.Pop(txQueue.pq).(QueueItem)
 		result = append(result, item.item)
 	}
