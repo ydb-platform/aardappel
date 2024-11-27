@@ -38,7 +38,7 @@ func CreateData(txData types.TxData) UpdatingData {
 
 func TestDefferentLensOfKeys(t *testing.T) {
 	ctx := context.Background()
-	txData, _ := reader.ParseTxData(ctx, []byte("{\"update\":{\"value1\":\"15\", \"value2\":15, \"value3\":null},\"key\":[15],\"ts\":[1718408057080,18446744073709551615]}"), 0)
+	txData, _ := reader.ParseTxData(ctx, []byte("{\"update\":{\"value1\":\"MTU=\", \"value2\":15, \"value3\":null},\"key\":[15],\"ts\":[1718408057080,18446744073709551615]}"), 0)
 	_, err := GenQueryFromUpdateTx(ctx, GetTestTableMetaInfo(), []UpdatingData{CreateData(txData)}, 0, 0)
 	require.NotNil(t, err)
 	targetErr := "GenQueryFromUpdateTx: GenListParam: CheckPrimaryKeySize: len of primary key is not equal to len of values"
@@ -47,7 +47,7 @@ func TestDefferentLensOfKeys(t *testing.T) {
 
 func TestColumnNameNotInScheme(t *testing.T) {
 	ctx := context.Background()
-	txData, _ := reader.ParseTxData(ctx, []byte("{\"update\":{\"value10\":\"15\", \"value3\":1.00000009},\"key\":[16,\"16\"],\"ts\":[18446744073709551614,18446744073709551614]}"), 0)
+	txData, _ := reader.ParseTxData(ctx, []byte("{\"update\":{\"value10\":\"15\", \"value3\":1.00000009},\"key\":[16,\"MTY=\"],\"ts\":[18446744073709551614,18446744073709551614]}"), 0)
 	_, err := GenQueryFromUpdateTx(ctx, GetTestTableMetaInfo(), []UpdatingData{CreateData(txData)}, 0, 1)
 	require.NotNil(t, err)
 	targetErr := "GenQueryFromUpdateTx: Column [value10] is not in dst table scheme"
@@ -56,8 +56,8 @@ func TestColumnNameNotInScheme(t *testing.T) {
 
 func TestGenUpdateQuery(t *testing.T) {
 	ctx := context.Background()
-	txData1, _ := reader.ParseTxData(ctx, []byte("{\"update\":{\"value1\":\"15\", \"value2\":18446744073709551615, \"value3\":1.00000009, \"value4\":null},\"key\":[15,\"15\"],\"ts\":[18446744073709551615,18446744073709551615]}"), 0)
-	txData2, _ := reader.ParseTxData(ctx, []byte("{\"update\":{\"value1\":\"15\", \"value3\":1.00000009},\"key\":[16,\"16\"],\"ts\":[18446744073709551614,18446744073709551614]}"), 0)
+	txData1, _ := reader.ParseTxData(ctx, []byte("{\"update\":{\"value1\":\"MTU=\", \"value2\":18446744073709551615, \"value3\":1.00000009, \"value4\":null},\"key\":[15,\"MTU=\"],\"ts\":[18446744073709551615,18446744073709551615]}"), 0)
+	txData2, _ := reader.ParseTxData(ctx, []byte("{\"update\":{\"value1\":\"MTU=\", \"value3\":1.00000009},\"key\":[16,\"MTY=\"],\"ts\":[18446744073709551614,18446744073709551614]}"), 0)
 	query, err := GenQueryFromUpdateTx(ctx, GetTestTableMetaInfo(), []UpdatingData{CreateData(txData1), CreateData(txData2)}, 0, 1)
 	require.Nil(t, err)
 	assert.Equal(t, "UPSERT INTO `path` (`key1`, `key2`, `value1`, `value2`, `value3`, `value4`) SELECT `key1`, `key2`, `value1`, `value2`, `value3`, `value4` FROM AS_TABLE($p_1_0);\n", query.Statement)
@@ -72,8 +72,8 @@ func TestGenUpdateQuery(t *testing.T) {
 
 func TestGenEraseQuery(t *testing.T) {
 	ctx := context.Background()
-	txData1, _ := reader.ParseTxData(ctx, []byte("{\"erase\":{},\"key\":[15,\"15\"],\"ts\":[18446744073709551615,18446744073709551615]}"), 0)
-	txData2, _ := reader.ParseTxData(ctx, []byte("{\"erase\":{},\"key\":[16,\"16\"],\"ts\":[18446744073709551614,18446744073709551614]}"), 0)
+	txData1, _ := reader.ParseTxData(ctx, []byte("{\"erase\":{},\"key\":[15,\"MTU=\"],\"ts\":[18446744073709551615,18446744073709551615]}"), 0)
+	txData2, _ := reader.ParseTxData(ctx, []byte("{\"erase\":{},\"key\":[16,\"MTY=\"],\"ts\":[18446744073709551614,18446744073709551614]}"), 0)
 	query, err := GenQueryFromEraseTx(ctx, GetTestTableMetaInfo(), []UpdatingData{CreateData(txData1), CreateData(txData2)}, 1, 1)
 	require.Nil(t, err)
 	assert.Equal(t, "DELETE FROM `path` ON SELECT * FROM AS_TABLE($p_1_1);\n", query.Statement)
@@ -88,14 +88,14 @@ func TestGenEraseQuery(t *testing.T) {
 
 func TestGenQuery(t *testing.T) {
 	ctx := context.Background()
-	txData1, _ := reader.ParseTxData(ctx, []byte("{\"update\":{\"value1\":\"15\", \"value2\":18446744073709551615, \"value3\":1.00000009, \"value4\":null},\"key\":[15,\"15\"],\"ts\":[18446744073709551615,18446744073709551615]}"), 0)
-	txData2, _ := reader.ParseTxData(ctx, []byte("{\"update\":{\"value1\":\"16\", \"value3\":1.00000009},\"key\":[16,\"16\"],\"ts\":[18446744073709551614,18446744073709551614]}"), 0)
-	txData3, _ := reader.ParseTxData(ctx, []byte("{\"update\":{\"value1\":\"17\", \"value3\":1.00000009},\"key\":[17,\"17\"],\"ts\":[18446744073709551614,18446744073709551614]}"), 0)
-	txData4, _ := reader.ParseTxData(ctx, []byte("{\"erase\":{},\"key\":[16,\"16\"],\"ts\":[18446744073709551615,18446744073709551615]}"), 0)
-	txData5, _ := reader.ParseTxData(ctx, []byte("{\"erase\":{},\"key\":[18,\"18\"],\"ts\":[18446744073709551614,18446744073709551614]}"), 0)
-	txData6, _ := reader.ParseTxData(ctx, []byte("{\"erase\":{},\"key\":[19,\"19\"],\"ts\":[18446744073709551614,18446744073709551614]}"), 0)
-	txData7, _ := reader.ParseTxData(ctx, []byte("{\"update\":{\"value1\":\"19\", \"value3\":1.00000009},\"key\":[19,\"19\"],\"ts\":[18446744073709551613,18446744073709551613]}"), 0)
-	txData8, _ := reader.ParseTxData(ctx, []byte("{\"update\":{\"value1\":\"27\", \"value3\":1.00000009},\"key\":[17,\"17\"],\"ts\":[18446744073709551613,18446744073709551613]}"), 0)
+	txData1, _ := reader.ParseTxData(ctx, []byte("{\"update\":{\"value1\":\"MTU=\", \"value2\":18446744073709551615, \"value3\":1.00000009, \"value4\":null},\"key\":[15,\"MTU=\"],\"ts\":[18446744073709551615,18446744073709551615]}"), 0)
+	txData2, _ := reader.ParseTxData(ctx, []byte("{\"update\":{\"value1\":\"MTY=\", \"value3\":1.00000009},\"key\":[16,\"MTY=\"],\"ts\":[18446744073709551614,18446744073709551614]}"), 0)
+	txData3, _ := reader.ParseTxData(ctx, []byte("{\"update\":{\"value1\":\"MTc=\", \"value3\":1.00000009},\"key\":[17,\"MTc=\"],\"ts\":[18446744073709551614,18446744073709551614]}"), 0)
+	txData4, _ := reader.ParseTxData(ctx, []byte("{\"erase\":{},\"key\":[16,\"MTY=\"],\"ts\":[18446744073709551615,18446744073709551615]}"), 0)
+	txData5, _ := reader.ParseTxData(ctx, []byte("{\"erase\":{},\"key\":[18,\"MTg=\"],\"ts\":[18446744073709551614,18446744073709551614]}"), 0)
+	txData6, _ := reader.ParseTxData(ctx, []byte("{\"erase\":{},\"key\":[19,\"MTk=\"],\"ts\":[18446744073709551614,18446744073709551614]}"), 0)
+	txData7, _ := reader.ParseTxData(ctx, []byte("{\"update\":{\"value1\":\"MTk=\", \"value3\":1.00000009},\"key\":[19,\"MTk=\"],\"ts\":[18446744073709551613,18446744073709551613]}"), 0)
+	txData8, _ := reader.ParseTxData(ctx, []byte("{\"update\":{\"value1\":\"Mjc=\", \"value3\":1.00000009},\"key\":[17,\"MTc=\"],\"ts\":[18446744073709551613,18446744073709551613]}"), 0)
 	query, err := GenQuery(ctx, GetTestTableMetaInfo(), []types.TxData{txData1, txData2, txData3, txData4, txData5, txData6, txData7, txData8}, 0)
 	require.Nil(t, err)
 	expectedResult := "UPSERT INTO `path` (`key1`, `key2`, `value1`, `value2`, `value3`, `value4`) SELECT `key1`, `key2`, `value1`, `value2`, `value3`, `value4` FROM AS_TABLE($p_0_0);\n" +
@@ -123,11 +123,11 @@ func TestGenQuery(t *testing.T) {
 
 func TestGenOnlyUpsertQuery(t *testing.T) {
 	ctx := context.Background()
-	txData1, _ := reader.ParseTxData(ctx, []byte("{\"update\":{\"value1\":\"15\", \"value2\":18446744073709551615, \"value3\":1.00000009, \"value4\":null},\"key\":[15,\"15\"],\"ts\":[18446744073709551615,18446744073709551615]}"), 0)
-	txData2, _ := reader.ParseTxData(ctx, []byte("{\"update\":{\"value1\":\"16\", \"value3\":1.00000009},\"key\":[16,\"16\"],\"ts\":[18446744073709551614,18446744073709551614]}"), 0)
-	txData3, _ := reader.ParseTxData(ctx, []byte("{\"update\":{\"value1\":\"17\", \"value3\":1.00000009},\"key\":[17,\"17\"],\"ts\":[18446744073709551614,18446744073709551614]}"), 0)
-	txData4, _ := reader.ParseTxData(ctx, []byte("{\"update\":{\"value1\":\"19\", \"value3\":1.00000009},\"key\":[19,\"19\"],\"ts\":[18446744073709551613,18446744073709551613]}"), 0)
-	txData5, _ := reader.ParseTxData(ctx, []byte("{\"update\":{\"value1\":\"27\", \"value3\":1.00000009},\"key\":[17,\"17\"],\"ts\":[18446744073709551613,18446744073709551613]}"), 0)
+	txData1, _ := reader.ParseTxData(ctx, []byte("{\"update\":{\"value1\":\"MTU=\", \"value2\":18446744073709551615, \"value3\":1.00000009, \"value4\":null},\"key\":[15,\"MTU=\"],\"ts\":[18446744073709551615,18446744073709551615]}"), 0)
+	txData2, _ := reader.ParseTxData(ctx, []byte("{\"update\":{\"value1\":\"MTY=\", \"value3\":1.00000009},\"key\":[16,\"MTY=\"],\"ts\":[18446744073709551614,18446744073709551614]}"), 0)
+	txData3, _ := reader.ParseTxData(ctx, []byte("{\"update\":{\"value1\":\"MTc=\", \"value3\":1.00000009},\"key\":[17,\"MTc=\"],\"ts\":[18446744073709551614,18446744073709551614]}"), 0)
+	txData4, _ := reader.ParseTxData(ctx, []byte("{\"update\":{\"value1\":\"MTk=\", \"value3\":1.00000009},\"key\":[19,\"MTk=\"],\"ts\":[18446744073709551613,18446744073709551613]}"), 0)
+	txData5, _ := reader.ParseTxData(ctx, []byte("{\"update\":{\"value1\":\"Mjc=\", \"value3\":1.00000009},\"key\":[17,\"MTc=\"],\"ts\":[18446744073709551613,18446744073709551613]}"), 0)
 	query, err := GenQuery(ctx, GetTestTableMetaInfo(), []types.TxData{txData1, txData2, txData3, txData4, txData5}, 0)
 	require.Nil(t, err)
 	expectedResult := "UPSERT INTO `path` (`key1`, `key2`, `value1`, `value2`, `value3`, `value4`) SELECT `key1`, `key2`, `value1`, `value2`, `value3`, `value4` FROM AS_TABLE($p_0_0);\n" +
@@ -150,9 +150,9 @@ func TestGenOnlyUpsertQuery(t *testing.T) {
 
 func TestGenOnlyEraseQuery(t *testing.T) {
 	ctx := context.Background()
-	txData1, _ := reader.ParseTxData(ctx, []byte("{\"erase\":{},\"key\":[16,\"16\"],\"ts\":[18446744073709551615,18446744073709551615]}"), 0)
-	txData2, _ := reader.ParseTxData(ctx, []byte("{\"erase\":{},\"key\":[17,\"17\"],\"ts\":[18446744073709551614,18446744073709551614]}"), 0)
-	txData3, _ := reader.ParseTxData(ctx, []byte("{\"erase\":{},\"key\":[16,\"16\"],\"ts\":[18446744073709551614,18446744073709551614]}"), 0)
+	txData1, _ := reader.ParseTxData(ctx, []byte("{\"erase\":{},\"key\":[16,\"MTY=\"],\"ts\":[18446744073709551615,18446744073709551615]}"), 0)
+	txData2, _ := reader.ParseTxData(ctx, []byte("{\"erase\":{},\"key\":[17,\"MTc=\"],\"ts\":[18446744073709551614,18446744073709551614]}"), 0)
+	txData3, _ := reader.ParseTxData(ctx, []byte("{\"erase\":{},\"key\":[16,\"MTY=\"],\"ts\":[18446744073709551614,18446744073709551614]}"), 0)
 	query, err := GenQuery(ctx, GetTestTableMetaInfo(), []types.TxData{txData1, txData2, txData3}, 0)
 	require.Nil(t, err)
 	expectedResult := "DELETE FROM `path` ON SELECT * FROM AS_TABLE($p_0_0);\n"
@@ -167,7 +167,7 @@ func TestGenOnlyEraseQuery(t *testing.T) {
 
 func TestGenQueryWithTimestamp(t *testing.T) {
 	ctx := context.Background()
-	txData1, _ := reader.ParseTxData(ctx, []byte("{\"update\":{\"value1\":\"15\", \"value5\":\"1970-01-01T00:00:01.000001Z\"},\"key\":[15,\"15\"],\"ts\":[18446744073709551615,18446744073709551615]}"), 0)
+	txData1, _ := reader.ParseTxData(ctx, []byte("{\"update\":{\"value1\":\"MTU=\", \"value5\":\"1970-01-01T00:00:01.000001Z\"},\"key\":[15,\"MTU=\"],\"ts\":[18446744073709551615,18446744073709551615]}"), 0)
 	query, err := GenQueryFromUpdateTx(ctx, GetTestTableMetaInfo(), []UpdatingData{CreateData(txData1)}, 0, 1)
 	require.Nil(t, err)
 	assert.Equal(t, "UPSERT INTO `path` (`key1`, `key2`, `value1`, `value5`) SELECT `key1`, `key2`, `value1`, `value5` FROM AS_TABLE($p_1_0);\n", query.Statement)

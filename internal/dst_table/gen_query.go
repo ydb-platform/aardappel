@@ -4,6 +4,7 @@ import (
 	"aardappel/internal/types"
 	"aardappel/internal/util/xlog"
 	"context"
+	"encoding/base64"
 	"encoding/json"
 	"fmt"
 	"github.com/ydb-platform/ydb-go-sdk/v3/table"
@@ -261,7 +262,11 @@ func ConvertToYDBValue(v json.RawMessage, t ydb_types.Type) (ydb_types.Value, er
 	case ydb_types.TypeString:
 		var value string
 		if err = json.Unmarshal(v, &value); err == nil {
-			return ydb_types.BytesValue([]byte(value)), nil
+			data, err := base64.StdEncoding.DecodeString(value)
+			if err != nil {
+				return nil, fmt.Errorf("DecodeString: unable to decode base64: %w", err)
+			}
+			return ydb_types.BytesValue(data), nil
 		}
 		return nil, fmt.Errorf("ConvertToYDBValue: unmurshal to string value: %w", err)
 	case ydb_types.TypeUTF8:
