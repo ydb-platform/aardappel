@@ -15,7 +15,7 @@ func TestAddBlockKeys(t *testing.T) {
 
 	runtime.ReadMemStats(&m1)
 	ctx := context.Background()
-	filter, err := NewYdbMemoryKeyFilter(ctx, nil, "")
+	filter, err := NewYdbMemoryKeyFilter(ctx, nil, "", "")
 	assert.EqualValues(t, err, nil)
 
 	var batch [][]byte
