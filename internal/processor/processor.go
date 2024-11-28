@@ -310,7 +310,7 @@ func NewProcessor(ctx context.Context, total int, stateTablePath string, client 
 	p.stage = state.stage
 
 	if filter != nil {
-		p.keyFilter, err = NewYdbMemoryKeyFilter(ctx, &p.dstServerClient, filter.Path)
+		p.keyFilter, err = NewYdbMemoryKeyFilter(ctx, &p.dstServerClient, filter.Path, instanceId)
 		if err != nil {
 			xlog.Error(ctx, "unable to construct key filter", zap.Error(err))
 			return nil, err
