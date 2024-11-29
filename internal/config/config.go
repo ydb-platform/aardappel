@@ -25,7 +25,7 @@ type CmdQueue struct {
 }
 
 type KeyFilter struct {
-	Path string `yaml:"table_path""`
+	Path string `yaml:"table_path"`
 }
 
 type Config struct {
