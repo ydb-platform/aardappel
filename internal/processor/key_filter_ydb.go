@@ -26,7 +26,7 @@ func storeKeys(ctx context.Context, path string, instanceId string, keys [][]byt
 	q := fmt.Sprintf("UPSERT INTO `%v` SELECT * FROM AS_TABLE ($keys);", path)
 
 	values := make([]ydb_types.Value, 0, len(keys))
-	xlog.Debug(ctx, "store keys", zap.Int("sz", len(keys)))
+	xlog.Debug(ctx, "store keys", zap.Int("total in batch", len(keys)))
 
 	for _, key := range keys {
 		values = append(values, ydb_types.StructValue(
