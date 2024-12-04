@@ -3,6 +3,7 @@ package dst_table
 import (
 	"aardappel/internal/types"
 	"aardappel/internal/util/xlog"
+	client "aardappel/internal/util/ydb"
 	"context"
 	"fmt"
 	"github.com/ydb-platform/ydb-go-sdk/v3/table"
@@ -27,7 +28,7 @@ func NewTableMetaInfo() *TableMetaInfo {
 }
 
 type DstTable struct {
-	client    table.Client
+	client    *client.TableClient
 	tablePath string
 	tableInfo TableMetaInfo
 }
@@ -36,7 +37,7 @@ func (d *DstTable) GetTablePath() string {
 	return d.tablePath
 }
 
-func NewDstTable(client table.Client, tablePath string) *DstTable {
+func NewDstTable(client *client.TableClient, tablePath string) *DstTable {
 	var dstTable DstTable
 	dstTable.client = client
 	dstTable.tablePath = tablePath
@@ -45,6 +46,7 @@ func NewDstTable(client table.Client, tablePath string) *DstTable {
 
 func (dstTable *DstTable) DescribeTable(ctx context.Context) (*options.Description, error) {
 	var desc options.Description
+	// раньше зависало, теперь упадет с тем, что невозможно заинить таблицу
 	err := dstTable.client.Do(ctx, func(ctx context.Context, s table.Session) error {
 		var err error
 		desc, err = s.DescribeTable(ctx, dstTable.tablePath)
@@ -72,28 +74,6 @@ func (dstTable *DstTable) Init(ctx context.Context) error {
 	}
 	xlog.Debug(ctx, "Got table meta info", zap.Strings("primary_keys", metaInfo.PrimaryKey), zap.Any("columns", metaInfo.Columns))
 	dstTable.tableInfo = *metaInfo
-	return nil
-}
-
-func (dstTable *DstTable) PushAsSingleTx(ctx context.Context, data PushQuery) error {
-	return dstTable.client.DoTx(ctx,
-		func(ctx context.Context, tx table.TransactionActor) error {
-			_, err := tx.Execute(ctx, data.Query, &data.Parameters)
-			return err
-		})
-}
-
-func (dstTable *DstTable) Push(ctx context.Context, txData []types.TxData) error {
-	query, err := GenQuery(ctx, dstTable.tableInfo, txData, 0)
-	if err != nil {
-		xlog.Error(ctx, "Can't gen query", zap.Error(err))
-		return fmt.Errorf("Push: %w", err)
-	}
-	err = dstTable.PushAsSingleTx(ctx, query)
-	if err != nil {
-		xlog.Error(ctx, "Can't push query", zap.Error(err))
-		return fmt.Errorf("Push: %w", err)
-	}
 	return nil
 }
 
