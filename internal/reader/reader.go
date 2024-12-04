@@ -5,10 +5,10 @@ import (
 	"aardappel/internal/types"
 	rd "aardappel/internal/util/reader"
 	"aardappel/internal/util/xlog"
+	client "aardappel/internal/util/ydb"
 	"context"
 	"encoding/json"
 	"fmt"
-	"github.com/ydb-platform/ydb-go-sdk/v3/topic/topicreader"
 	"go.uber.org/zap"
 	"io"
 	"sync"
@@ -28,7 +28,7 @@ func serializeKey(key []json.RawMessage) string {
 	return string(data)
 }
 
-func WriteAllProblemTxsUntilNextHb(ctx context.Context, topicPath string, readerId uint32, reader *topicreader.Reader, channel processor.Channel, lastHb map[int64]types.Position, hb types.Position, partsCount int) {
+func WriteAllProblemTxsUntilNextHb(ctx context.Context, topicPath string, readerId uint32, reader *client.TopicReader, channel processor.Channel, lastHb map[int64]types.Position, hb types.Position, partsCount int) {
 	var partsIsDone map[int64]bool
 	for part, partHb := range lastHb {
 		if hb.LessThan(partHb) {
@@ -36,7 +36,8 @@ func WriteAllProblemTxsUntilNextHb(ctx context.Context, topicPath string, reader
 		}
 	}
 	for ctx.Err() == nil && len(partsIsDone) < partsCount {
-		msg, err := reader.ReadMessage(ctx)
+		// done? после этой функции безусовный xlog.fatal
+		msg, err := reader.ReadMessageWithTimeout(ctx)
 		if err != nil {
 			xlog.Error(ctx, "Unable to read message", zap.Error(err))
 			return
@@ -80,7 +81,7 @@ func WriteAllProblemTxsUntilNextHb(ctx context.Context, topicPath string, reader
 	}
 }
 
-func ReadTopic(ctx context.Context, topicPath string, readerId uint32, reader *topicreader.Reader, channel processor.Channel, partsCount int, handler processor.ConflictHandler) {
+func ReadTopic(ctx context.Context, topicPath string, readerId uint32, reader *client.TopicReader, channel processor.Channel, partsCount int, handler processor.ConflictHandler) {
 	var mu sync.Mutex
 	lastHb := make(map[int64]types.Position)
 	// returns true - pass item, false - skip item
@@ -113,26 +114,27 @@ func ReadTopic(ctx context.Context, topicPath string, readerId uint32, reader *t
 				"got tx {\"topic\":\"%v\",\"key\":%v,\"ts\":[%v,%v]}",
 				lastHb[part].Step, lastHb[part].TxId, topicPath, key, data.Step, data.TxId)
 			stopErr := channel.SaveReplicationState(ctx, processor.REPLICATION_FATAL_ERROR, errString)
-			WriteAllProblemTxsUntilNextHb(ctx, topicPath, readerId, reader, channel, lastHb, hb, partsCount)
 			if stopErr != nil {
 				xlog.Fatal(ctx, errString,
 					zap.NamedError("this issue was not stored in the state table due to double error", stopErr))
-			} else {
-				xlog.Fatal(ctx, errString)
 			}
+			WriteAllProblemTxsUntilNextHb(ctx, topicPath, readerId, reader, channel, lastHb, hb, partsCount)
+			xlog.Fatal(ctx, errString)
 		}
 		return true
 	}
 
 	defer func() {
+		// не зависал, если случается разрыв сети на этом моменте, то как будто ничего страшного, так как оно закрывается если ардапель стопается?
 		err := reader.Close(ctx)
 		xlog.Error(ctx, "stop reader call returns", zap.Error(err))
 	}()
 
 	for ctx.Err() == nil {
-		msg, err := reader.ReadMessage(ctx)
+		// Завершится с сообщением об таймауте при чтении
+		msg, err := reader.ReadMessageWithTimeout(ctx)
 		if err != nil {
-			xlog.Error(ctx, "Unable to read message", zap.Error(err))
+			xlog.Fatal(ctx, "Unable to read message", zap.Error(err))
 			return
 		}
 		jsonData, err := io.ReadAll(msg)
@@ -165,7 +167,7 @@ func ReadTopic(ctx context.Context, topicPath string, readerId uint32, reader *t
 			} else {
 				err := data.CommitTopic()
 				if err != nil {
-					xlog.Error(ctx, "unable to commit topic during skip",
+					xlog.Fatal(ctx, "unable to commit topic during skip",
 						zap.NamedError("topic commit error", err))
 				}
 			}

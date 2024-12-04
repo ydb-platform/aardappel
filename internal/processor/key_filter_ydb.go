@@ -2,6 +2,7 @@ package processor
 
 import (
 	"aardappel/internal/util/xlog"
+	client "aardappel/internal/util/ydb"
 	"context"
 	"fmt"
 	"github.com/ydb-platform/ydb-go-sdk/v3/table"
@@ -15,14 +16,14 @@ import (
 type YdbMemoryKeyFilter struct {
 	path            string
 	keys            sync.Map
-	dstServerClient table.Client
+	dstServerClient *client.TableClient
 	size            uint64
 	instanceId      string
 }
 
 const storeBatchSz = 100
 
-func storeKeys(ctx context.Context, path string, instanceId string, keys [][]byte, dstClient table.Client) {
+func storeKeys(ctx context.Context, path string, instanceId string, keys [][]byte, dstClient *client.TableClient) {
 	q := fmt.Sprintf("UPSERT INTO `%v` SELECT * FROM AS_TABLE ($keys);", path)
 
 	values := make([]ydb_types.Value, 0, len(keys))
@@ -47,7 +48,7 @@ func storeKeys(ctx context.Context, path string, instanceId string, keys [][]byt
 	}
 }
 
-func readKeys(ctx context.Context, client table.Client, path string, instanceId string, feedKeys func(batch [][]byte)) error {
+func readKeys(ctx context.Context, client *client.TableClient, path string, instanceId string, feedKeys func(batch [][]byte)) error {
 	return client.Do(ctx,
 		func(ctx context.Context, s table.Session) error {
 			res, err := s.StreamReadTable(ctx, path,
@@ -84,12 +85,12 @@ func readKeys(ctx context.Context, client table.Client, path string, instanceId 
 		})
 }
 
-func NewYdbMemoryKeyFilter(ctx context.Context, client *table.Client, filterTablePath string, instanceId string) (*YdbMemoryKeyFilter, error) {
+func NewYdbMemoryKeyFilter(ctx context.Context, client *client.TableClient, filterTablePath string, instanceId string) (*YdbMemoryKeyFilter, error) {
 	var filter YdbMemoryKeyFilter
 
 	if len(filterTablePath) != 0 && client != nil {
 		xlog.Debug(ctx, "try to read key filter table", zap.String("path", filterTablePath))
-		err := readKeys(ctx, *client, filterTablePath, instanceId, func(batch [][]byte) {
+		err := readKeys(ctx, client, filterTablePath, instanceId, func(batch [][]byte) {
 			for _, key := range batch {
 				filter.keys.Store(string(key), struct{}{})
 			}
@@ -98,7 +99,7 @@ func NewYdbMemoryKeyFilter(ctx context.Context, client *table.Client, filterTabl
 			return nil, err
 		}
 		filter.path = filterTablePath
-		filter.dstServerClient = *client
+		filter.dstServerClient = client
 		filter.instanceId = instanceId
 	}
 
