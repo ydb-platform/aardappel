@@ -93,8 +93,8 @@ type TopicClient struct {
 	client topic.Client
 }
 
-func (c *TopicClient) StartReader(consumer string, path string) (*TopicReader, error) {
-	reader, err := c.client.StartReader(consumer, topicoptions.ReadTopic(path))
+func (c *TopicClient) StartReader(consumer string, path string, opts ...topicoptions.ReaderOption) (*TopicReader, error) {
+	reader, err := c.client.StartReader(consumer, topicoptions.ReadTopic(path), opts...)
 	if err != nil {
 		return nil, err
 	}
