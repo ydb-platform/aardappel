@@ -8,6 +8,7 @@ import (
 	"aardappel/internal/types"
 	"aardappel/internal/util/key_serializer"
 	"aardappel/internal/util/xlog"
+	client "aardappel/internal/util/ydb"
 	"context"
 	"encoding/json"
 	"errors"
@@ -16,8 +17,6 @@ import (
 	"github.com/ydb-platform/ydb-go-sdk/v3/table/options"
 	"github.com/ydb-platform/ydb-go-sdk/v3/table/result/named"
 	ydbTypes "github.com/ydb-platform/ydb-go-sdk/v3/table/types"
-	"github.com/ydb-platform/ydb-go-sdk/v3/topic"
-	"github.com/ydb-platform/ydb-go-sdk/v3/topic/topicoptions"
 	"github.com/ydb-platform/ydb-go-sdk/v3/topic/topicreader"
 	"go.uber.org/zap"
 	"io"
@@ -54,7 +53,7 @@ type Processor struct {
 	txChannel       chan func() error
 	hbTracker       *hb_tracker.HeartBeatTracker
 	txQueue         *tx_queue.TxQueue
-	dstServerClient table.Client
+	dstServerClient *client.TableClient
 	lastPosition    *AtopmicPos
 	stateStoreQuery string
 	stateTablePath  string
@@ -103,11 +102,11 @@ type CmdQueueConflictHandler struct {
 	InstanceId string
 	Path       string
 	Consumer   string
-	Topic      topic.Client
+	Topic      *client.TopicClient
 	Lock       sync.Mutex
 }
 
-func NewCmdQueueConflictHandler(ctx context.Context, instanceId string, path string, consumer string, topic topic.Client) *CmdQueueConflictHandler {
+func NewCmdQueueConflictHandler(ctx context.Context, instanceId string, path string, consumer string, topic *client.TopicClient) *CmdQueueConflictHandler {
 	var handler CmdQueueConflictHandler
 	handler.InstanceId = instanceId
 	handler.Path = path
@@ -116,7 +115,7 @@ func NewCmdQueueConflictHandler(ctx context.Context, instanceId string, path str
 	return &handler
 }
 
-func readWithTimeout(ctx context.Context, reader *topicreader.Reader) (*topicreader.Message, error, bool) {
+func readWithTimeout(ctx context.Context, reader *client.TopicReader) (*topicreader.Message, error, bool) {
 	timingCtx, cancel := context.WithTimeout(ctx, time.Second*5)
 	defer cancel()
 	msg, err := reader.ReadMessage(timingCtx)
@@ -130,7 +129,8 @@ func (this *CmdQueueConflictHandler) Handle(ctx context.Context, streamTopicPath
 	this.Lock.Lock()
 	defer this.Lock.Unlock()
 
-	reader, err := this.Topic.StartReader(this.Consumer, topicoptions.ReadTopic(this.Path))
+	// Если тут упадет, то только если в другом месте упадет...
+	reader, err := this.Topic.StartReader(this.Consumer, this.Path)
 	if err != nil {
 		xlog.Fatal(ctx, "Unable to read from specified command topic",
 			zap.String("consumer", this.Consumer),
@@ -237,7 +237,7 @@ type ReplicationState struct {
 	position types.Position
 }
 
-func selectReplicationState(ctx context.Context, client table.Client, stateTablePath string, instanceId string) (ReplicationState, error) {
+func selectReplicationState(ctx context.Context, client *client.TableClient, stateTablePath string, instanceId string) (ReplicationState, error) {
 	param := table.NewQueryParameters(
 		table.ValueParam("$instanceId", ydbTypes.UTF8Value(instanceId)),
 	)
@@ -248,6 +248,7 @@ func selectReplicationState(ctx context.Context, client table.Client, stateTable
 	var lastMsg *string
 	var stage *string
 
+	// Раньше зависало, сейчас упадет сразу с ошибкой, что не удалось создать процессов из-за таймаута
 	err := client.DoTx(ctx,
 		func(ctx context.Context, tx table.TransactionActor) error {
 			res, err := tx.Execute(ctx, stateQuery, param)
@@ -286,7 +287,7 @@ func selectReplicationState(ctx context.Context, client table.Client, stateTable
 	return ReplicationState{position: types.Position{*step, *txId}, stage: *stage}, err
 }
 
-func NewProcessor(ctx context.Context, total int, stateTablePath string, client table.Client, instanceId string, filter *config.KeyFilter) (*Processor, error) {
+func NewProcessor(ctx context.Context, total int, stateTablePath string, client *client.TableClient, instanceId string, filter *config.KeyFilter) (*Processor, error) {
 	var p Processor
 	p.hbTracker = hb_tracker.NewHeartBeatTracker(total)
 	p.txChannel = make(chan func() error, 1000)
@@ -310,7 +311,7 @@ func NewProcessor(ctx context.Context, total int, stateTablePath string, client 
 	p.stage = state.stage
 
 	if filter != nil {
-		p.keyFilter, err = NewYdbMemoryKeyFilter(ctx, &p.dstServerClient, filter.Path, instanceId)
+		p.keyFilter, err = NewYdbMemoryKeyFilter(ctx, p.dstServerClient, filter.Path, instanceId)
 		if err != nil {
 			xlog.Error(ctx, "unable to construct key filter", zap.Error(err))
 			return nil, err
@@ -347,11 +348,14 @@ func (processor *Processor) EnqueueHb(ctx context.Context, hb types.HbData) {
 		zap.Int64("partition_id:", hb.StreamId.PartitionId),
 		zap.Bool("willSkip", types.NewPosition(hb).LessThan(lastPosition)))
 	if types.NewPosition(hb).LessThan(lastPosition) {
+		// Ошибку будет не заметно, только если в другом месте упадет
 		err := hb.CommitTopic()
+		if err != nil {
+			xlog.Fatal(ctx, "unable to commit topic", zap.Error(err))
+		}
 		xlog.Debug(ctx, "skip old hb",
 			zap.Uint64("step", hb.Step),
-			zap.Uint64("tx_id", hb.TxId),
-			zap.NamedError("topic commit error", err))
+			zap.Uint64("tx_id", hb.TxId))
 		return
 	}
 	fn := func() error {
@@ -381,6 +385,7 @@ func (processor *Processor) SaveReplicationState(ctx context.Context, status str
 	stopQuery := fmt.Sprintf("UPSERT INTO %v (id, state, last_msg) VALUES ($instanceId,$state,$lastError)",
 		processor.stateTablePath)
 
+	// Раньше зависало, сейчас нет, после этого xlog.fatal, так что ардапель должен нормально завершиться
 	return processor.dstServerClient.DoTx(ctx,
 		func(ctx context.Context, tx table.TransactionActor) error {
 			_, err := tx.Execute(ctx, stopQuery, param)
@@ -396,11 +401,14 @@ func (processor *Processor) EnqueueTx(ctx context.Context, tx types.TxData) {
 		zap.Uint32("reader_id", tx.TableId),
 		zap.Bool("willSkip", (types.Position{tx.Step, tx.TxId}.LessThan(lastPosition))))
 	if (types.Position{tx.Step, tx.TxId}.LessThan(lastPosition)) {
+		//  Ошибка незаметна, ток если где то в другом месте завершится...
 		err := tx.CommitTopic()
+		if err != nil {
+			xlog.Fatal(ctx, "unable to commit topic", zap.Error(err))
+		}
 		xlog.Debug(ctx, "skip old tx",
 			zap.Uint64("step", tx.Step),
-			zap.Uint64("tx_id", tx.TxId),
-			zap.NamedError("topic commit error", err))
+			zap.Uint64("tx_id", tx.TxId))
 		return
 	}
 	fn := func() error {
@@ -645,6 +653,7 @@ func (processor *Processor) DoInitialScan(ctx context.Context, dstTables []*dst_
 	}
 
 	for i := 0; i < len(txs); i++ {
+		// Ошибка незаметна, так что ток если в другом месте обнаружится
 		err := txs[i].CommitTopic()
 		if err != nil {
 			return nil, fmt.Errorf("%w; Unable to commit topic fot dataTx", err)
@@ -655,6 +664,7 @@ func (processor *Processor) DoInitialScan(ctx context.Context, dstTables []*dst_
 		xlog.Debug(ctx, "commit hb in topic",
 			zap.Uint64("step", processor.initialScanPos.Step),
 			zap.Uint64("tx_id", processor.initialScanPos.TxId))
+		// Ошибка не заметна, ток если в другом месте стопнется
 		err := processor.initialScanPos.CommitTopic()
 		if err != nil {
 			return nil, fmt.Errorf("%w; Unable to commit topic fot hb", err)
@@ -701,13 +711,19 @@ func (processor *Processor) PushAsSingleTx(ctx context.Context, data dst_table.P
 	)
 	param := append(data.Parameters, *stateParam...)
 
-	_, err := tx.Execute(ctx, data.Query+processor.stateStoreQuery, &param, options.WithCommit())
-	return err
+	// Завершится из-за таймаута
+	ctxWithTimeout, cancel := context.WithTimeout(ctx, 1*time.Millisecond)
+	defer cancel()
+	_, err := tx.Execute(ctxWithTimeout, data.Query+processor.stateStoreQuery, &param, options.WithCommit())
+	return client.HandleRequestError(ctx, err)
 }
 
 func (processor *Processor) PushTxs(ctx context.Context, data dst_table.PushQuery, tx table.Transaction) error {
-	_, err := tx.Execute(ctx, data.Query, &data.Parameters, options.WithCommit())
-	return err
+	// Завершится из-за таймаута
+	ctxWithTimeout, cancel := context.WithTimeout(ctx, client.DEFAULT_TIMEOUT)
+	defer cancel()
+	_, err := tx.Execute(ctxWithTimeout, data.Query, &data.Parameters, options.WithCommit())
+	return client.HandleRequestError(ctxWithTimeout, err)
 }
 
 func (processor *Processor) DoReplication(ctx context.Context, dstTables []*dst_table.DstTable,
@@ -741,6 +757,7 @@ func (processor *Processor) DoReplication(ctx context.Context, dstTables []*dst_
 	processor.lastPosition.Store(*types.NewPosition(batch.Hb))
 
 	for i := 0; i < len(batch.TxData); i++ {
+		// Ошбика не заметна, ток если в другом месте упадет
 		err := batch.TxData[i].CommitTopic()
 		if err != nil {
 			return nil, fmt.Errorf("%w; Unable to commit topic fot dataTx", err)
@@ -750,6 +767,7 @@ func (processor *Processor) DoReplication(ctx context.Context, dstTables []*dst_
 	xlog.Debug(ctx, "commit hb in topic",
 		zap.Uint64("step", batch.Hb.Step),
 		zap.Uint64("tx_id", batch.Hb.TxId))
+	// Ошибка не заметна, ток если в другом месте упадет
 	err = batch.Hb.CommitTopic()
 	if err != nil {
 		return nil, fmt.Errorf("%w; Unable to commit topic fot hb", err)

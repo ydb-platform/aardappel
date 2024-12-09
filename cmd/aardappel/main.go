@@ -7,6 +7,7 @@ import (
 	processor "aardappel/internal/processor"
 	topicReader "aardappel/internal/reader"
 	"aardappel/internal/util/xlog"
+	client "aardappel/internal/util/ydb"
 	"context"
 	"errors"
 	"flag"
@@ -18,7 +19,6 @@ import (
 	"github.com/ydb-platform/ydb-go-sdk/v3/balancers"
 	"github.com/ydb-platform/ydb-go-sdk/v3/table"
 	ydbTypes "github.com/ydb-platform/ydb-go-sdk/v3/table/types"
-	"github.com/ydb-platform/ydb-go-sdk/v3/topic/topicoptions"
 	"go.uber.org/zap"
 	"log"
 	"os"
@@ -84,16 +84,16 @@ func DoReplication(ctx context.Context, prc *processor.Processor, dstTables []*d
 		zap.Float32("quorum waiting duration", float32(stats.QuorumWaitingDurationMs)/1000))
 }
 
-func createReplicaStateTable(ctx context.Context, client table.Client, stateTable string) error {
+func createReplicaStateTable(ctx context.Context, client *client.TableClient, stateTable string) error {
 	query := fmt.Sprintf("CREATE TABLE IF NOT EXISTS %v (id Utf8, step_id Uint64, tx_id Uint64, state Utf8, stage Utf8, "+
 		"last_msg Utf8, lock_owner Utf8, lock_deadline Timestamp, PRIMARY KEY(id))", stateTable)
-	return client.Do(ctx,
-		func(ctx context.Context, s table.Session) error {
-			return s.ExecuteSchemeQuery(ctx, query, nil)
-		})
+	// раньше зависало, теперь нет, упадет ч тем, что не сможет получить таймаут
+	return client.Do(ctx, func(ctx context.Context, s table.Session) error {
+		return s.ExecuteSchemeQuery(ctx, query, nil)
+	})
 }
 
-func initReplicaStateTable(ctx context.Context, client table.Client, stateTable string, instanceId string) error {
+func initReplicaStateTable(ctx context.Context, client *client.TableClient, stateTable string, instanceId string) error {
 	param := table.NewQueryParameters(
 		table.ValueParam("$instanceId", ydbTypes.UTF8Value(instanceId)),
 		table.ValueParam("$state", ydbTypes.UTF8Value(processor.REPLICATION_OK)),
@@ -101,6 +101,7 @@ func initReplicaStateTable(ctx context.Context, client table.Client, stateTable 
 	)
 	initQuery := fmt.Sprintf("INSERT INTO %v (id, step_id, tx_id, state, stage) VALUES ($instanceId,0,0, $state, $stage)",
 		stateTable)
+	// раньше зависало, теперь упадет, что не удалось заинить таблицу из-за таймаута
 	err := client.DoTx(ctx,
 		func(ctx context.Context, tx table.TransactionActor) error {
 			_, err := tx.Execute(ctx, initQuery, param)
@@ -113,13 +114,14 @@ func initReplicaStateTable(ctx context.Context, client table.Client, stateTable 
 	return err
 }
 
-func doMain(ctx context.Context, config configInit.Config, srcDb *ydb.Driver, dstDb *ydb.Driver,
+func doMain(ctx context.Context, config configInit.Config, srcDb *client.TopicClient, dstDb *client.YdbClient,
 	locker *ydb_locker.Locker, mon pmon.Metrics) {
 	var totalPartitions int
 	var streamDbgInfos []string
 	topicPartsCountMap := make(map[int]int)
 	for i := 0; i < len(config.Streams); i++ {
-		desc, err := srcDb.Topic().Describe(ctx, config.Streams[i].SrcTopic)
+		// раньше зависало, теперь нет, упадет с ошибкой таймаута при попытке описать топик
+		desc, err := srcDb.Describe(ctx, config.Streams[i].SrcTopic)
 		if err != nil {
 			xlog.Fatal(ctx, "Unable to describe topic",
 				zap.String("src_topic", config.Streams[i].SrcTopic),
@@ -140,11 +142,10 @@ func doMain(ctx context.Context, config configInit.Config, srcDb *ydb.Driver, ds
 			zap.String("path", config.CmdQueue.Path),
 			zap.String("consumer", config.CmdQueue.Consumer))
 		conflictHandler = processor.NewCmdQueueConflictHandler(
-			ctx, config.InstanceId, config.CmdQueue.Path, config.CmdQueue.Consumer,
-			dstDb.Topic())
+			ctx, config.InstanceId, config.CmdQueue.Path, config.CmdQueue.Consumer, dstDb.TopicClient)
 	}
 
-	prc, err := processor.NewProcessor(ctx, totalPartitions, config.StateTable, dstDb.Table(), config.InstanceId, config.KeyFilter)
+	prc, err := processor.NewProcessor(ctx, totalPartitions, config.StateTable, dstDb.TableClient, config.InstanceId, config.KeyFilter)
 	if err != nil {
 		xlog.Fatal(ctx, "Unable to create processor", zap.Error(err))
 	}
@@ -156,14 +157,15 @@ func doMain(ctx context.Context, config configInit.Config, srcDb *ydb.Driver, ds
 
 	var dstTables []*dst_table.DstTable
 	for i := 0; i < len(config.Streams); i++ {
-		reader, err := srcDb.Topic().StartReader(config.Streams[i].Consumer, topicoptions.ReadTopic(config.Streams[i].SrcTopic))
+		// не зависнет, ошибки не будет, упадет дальше
+		reader, err := srcDb.StartReader(config.Streams[i].Consumer, config.Streams[i].SrcTopic)
 		if err != nil {
 			xlog.Fatal(ctx, "Unable to create topic reader",
 				zap.String("consumer", config.Streams[i].Consumer),
 				zap.String("src_topic", config.Streams[i].SrcTopic),
 				zap.Error(err))
 		}
-		dstTables = append(dstTables, dst_table.NewDstTable(dstDb.Table(), config.Streams[i].DstTable))
+		dstTables = append(dstTables, dst_table.NewDstTable(dstDb.TableClient, config.Streams[i].DstTable))
 		err = dstTables[i].Init(ctx)
 		if err != nil {
 			xlog.Fatal(ctx, "Unable to init dst table")
@@ -254,19 +256,20 @@ func main() {
 		dstOpts = append(dstOpts, ydb.WithBalancer(balancers.SingleConn()))
 	}
 
-	dstDb, err := ydb.Open(ctx, config.DstConnectionString, dstOpts...)
+	// не зависнет, ошибку не вернет, упадет дальше
+	dstDb, err := client.NewYdbClient(ctx, config.DstConnectionString, dstOpts...)
 	if err != nil {
 		xlog.Fatal(ctx, "Unable to connect to dst cluster", zap.Error(err))
 	}
 	xlog.Debug(ctx, "YDB dst opened")
 
-	err = createReplicaStateTable(ctx, dstDb.Table(), config.StateTable)
+	err = createReplicaStateTable(ctx, dstDb.TableClient, config.StateTable)
 	if err != nil {
 		xlog.Fatal(ctx, "Replication startup failed",
 			zap.String("unable to create table", config.StateTable), zap.Error(err))
 	}
 
-	err = initReplicaStateTable(ctx, dstDb.Table(), config.StateTable, config.InstanceId)
+	err = initReplicaStateTable(ctx, dstDb.TableClient, config.StateTable, config.InstanceId)
 	if err != nil {
 		xlog.Fatal(ctx, "Replication startup failed",
 			zap.String("unable to init table", config.StateTable), zap.Error(err))
@@ -276,11 +279,12 @@ func main() {
 	owner := fmt.Sprintf("lock_%s_%s", hostname, uuid.New().String())
 
 	reqBuilder := GetLockerRequestBuilder(config.StateTable)
-	lockStorage := ydb_locker.YdbLockStorage{Db: dstDb, ReqBuilder: reqBuilder}
+	lockStorage := ydb_locker.YdbLockStorage{Db: dstDb.GetDriver(), ReqBuilder: reqBuilder}
 	locker := ydb_locker.NewLocker(&lockStorage,
 		config.InstanceId, owner,
 		time.Duration(config.MaxExpHbInterval*2)*time.Second)
 
+	// завершится с логом https://paste.nebius.dev/paste/1dc40974-6f27-417f-94da-5bf95d5d4a39.html
 	lockChannel := locker.LockerContext(ctx)
 	var cont bool
 	cont = true
@@ -294,12 +298,13 @@ func main() {
 				continue
 			}
 			lockErrCnt = 0
-			srcDb, err := ydb.Open(lockCtx, config.SrcConnectionString, srcOpts...)
+			// не зависнет, ошибку не вернет, упадет дальше
+			srcDb, err := client.NewYdbClient(lockCtx, config.SrcConnectionString, srcOpts...)
 			if err != nil {
 				xlog.Fatal(ctx, "Unable to connect to src cluster", zap.Error(err))
 			}
 			xlog.Debug(ctx, "YDB src opened")
-			doMain(lockCtx, config, srcDb, dstDb, locker, mon)
+			doMain(lockCtx, config, srcDb.TopicClient, dstDb, locker, mon)
 		case <-time.After(5 * time.Second):
 			if lockErrCnt == 10 {
 				cont = false
