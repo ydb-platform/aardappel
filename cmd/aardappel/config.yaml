@@ -48,3 +48,6 @@ log_level: "debug"
 cmd_topic:
   path: aardappel_command
   consumer: c1
+
+dead_letter_queue:
+  path: dlq

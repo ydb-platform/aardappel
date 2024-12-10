@@ -10,9 +10,10 @@ import (
 )
 
 type Stream struct {
-	SrcTopic string `yaml:"src_topic"`
-	DstTable string `yaml:"dst_table"`
-	Consumer string `yaml:"consumer"`
+	SrcTopic        string `yaml:"src_topic"`
+	DstTable        string `yaml:"dst_table"`
+	Consumer        string `yaml:"consumer"`
+	ProblemStrategy string `yaml:"problem_strategy"`
 }
 
 type MonServer struct {
@@ -22,6 +23,10 @@ type MonServer struct {
 type CmdQueue struct {
 	Path     string `yaml:"path"`
 	Consumer string `yaml:"consumer"`
+}
+
+type DLQueue struct {
+	Path string `yaml:"path"`
 }
 
 type KeyFilter struct {
@@ -45,6 +50,7 @@ type Config struct {
 	MonServer           *MonServer `yaml:"mon_server"`
 	CmdQueue            *CmdQueue  `yaml:"cmd_queue"`
 	KeyFilter           *KeyFilter `yaml:"key_filter"`
+	DLQueue             *DLQueue   `yaml:"dead_letter_queue"`
 }
 
 func (config Config) ToString() (string, error) {

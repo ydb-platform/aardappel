@@ -28,7 +28,7 @@ func serializeKey(key []json.RawMessage) string {
 	return string(data)
 }
 
-func WriteAllProblemTxsUntilNextHb(ctx context.Context, topicPath string, readerId uint32, reader *client.TopicReader, channel processor.Channel, lastHb map[int64]types.Position, hb types.Position, partsCount int) {
+func WriteAllProblemTxsUntilNextHb(ctx context.Context, topicPath string, readerId uint32, reader *client.TopicReader, channel processor.Channel, lastHb map[int64]types.Position, hb types.Position, partsCount int, dlQueue *processor.DLQueue) {
 	var partsIsDone map[int64]bool
 	for part, partHb := range lastHb {
 		if hb.LessThan(partHb) {
@@ -62,10 +62,19 @@ func WriteAllProblemTxsUntilNextHb(ctx context.Context, topicPath string, reader
 			}
 
 			if partHb, ok := lastHb[msg.PartitionID()]; ok && (types.Position{data.Step, data.TxId}.LessThan(partHb)) {
+				txInfo := fmt.Sprintf("{\"topic\":\"%v\",\"key\":%v,\"ts\":[%v,%v]}", topicPath, serializeKey(data.KeyValues), data.Step, data.TxId)
 				errString := fmt.Sprintf("Unexpected timestamp in stream, last hb timestamp:[%v,%v],"+
-					"got tx {\"topic\":\"%v\",\"key\":%v,\"ts\":[%v,%v]}",
-					hb.Step, hb.TxId, topicPath, serializeKey(data.KeyValues), data.Step, data.TxId)
+					"got tx %v", hb.Step, hb.TxId, txInfo)
 				xlog.Error(ctx, errString)
+
+				if dlQueue != nil {
+					dlQueue.Lock.Lock()
+					err := dlQueue.Writer.Write(ctx, errString)
+					if err != nil {
+						xlog.Error(ctx, "Unable to write into dead letter queue", zap.Error(err), zap.String("tx", txInfo))
+					}
+					dlQueue.Lock.Unlock()
+				}
 			}
 		} else if topicData.Resolved != nil {
 			data, err := rd.ParseHBData(ctx, jsonData, types.StreamId{readerId, msg.PartitionID()})
@@ -81,7 +90,7 @@ func WriteAllProblemTxsUntilNextHb(ctx context.Context, topicPath string, reader
 	}
 }
 
-func ReadTopic(ctx context.Context, topicPath string, readerId uint32, reader *client.TopicReader, channel processor.Channel, partsCount int, handler processor.ConflictHandler) {
+func ReadTopic(ctx context.Context, topicPath string, readerId uint32, reader *client.TopicReader, channel processor.Channel, partsCount int, handler processor.ConflictHandler, dlQueue *processor.DLQueue) {
 	var mu sync.Mutex
 	lastHb := make(map[int64]types.Position)
 	// returns true - pass item, false - skip item
@@ -110,18 +119,28 @@ func ReadTopic(ctx context.Context, topicPath string, readerId uint32, reader *c
 				}
 			}
 
+			txInfo := fmt.Sprintf("{\"topic\":\"%v\",\"key\":%v,\"ts\":[%v,%v]}", topicPath, key, data.Step, data.TxId)
 			errString := fmt.Sprintf("Unexpected timestamp in stream, last hb ts:[%v,%v], "+
-				"got tx {\"topic\":\"%v\",\"key\":%v,\"ts\":[%v,%v]}",
-				lastHb[part].Step, lastHb[part].TxId, topicPath, key, data.Step, data.TxId)
+				"got tx %v", lastHb[part].Step, lastHb[part].TxId, txInfo)
+			xlog.Error(ctx, errString)
 			stopErr := channel.SaveReplicationState(ctx, processor.REPLICATION_FATAL_ERROR, errString)
 			if stopErr != nil {
 				xlog.Fatal(ctx, errString,
 					zap.NamedError("this issue was not stored in the state table due to double error", stopErr))
 			}
-			WriteAllProblemTxsUntilNextHb(ctx, topicPath, readerId, reader, channel, lastHb, hb, partsCount)
+			if dlQueue != nil {
+				dlQueue.Lock.Lock()
+				err := dlQueue.Writer.Write(ctx, errString)
+				if err != nil {
+					xlog.Error(ctx, "Unable to write into dead letter queue", zap.Error(err), zap.String("tx", txInfo))
+				}
+				dlQueue.Lock.Unlock()
+			}
+			WriteAllProblemTxsUntilNextHb(ctx, topicPath, readerId, reader, channel, lastHb, hb, partsCount, dlQueue)
 			xlog.Fatal(ctx, errString)
 		}
-		return true
+		//WriteAllProblemTxsUntilNextHb(ctx, topicPath, readerId, reader, channel, lastHb, types.Position{data.Step, data.TxId}, partsCount, dlQueue)
+		return false
 	}
 
 	defer func() {

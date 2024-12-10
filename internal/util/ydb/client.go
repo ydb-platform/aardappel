@@ -11,7 +11,9 @@ import (
 	"github.com/ydb-platform/ydb-go-sdk/v3/topic/topicoptions"
 	"github.com/ydb-platform/ydb-go-sdk/v3/topic/topicreader"
 	"github.com/ydb-platform/ydb-go-sdk/v3/topic/topictypes"
+	"github.com/ydb-platform/ydb-go-sdk/v3/topic/topicwriter"
 	"go.uber.org/zap"
+	"strings"
 	"time"
 )
 
@@ -89,6 +91,22 @@ func (r *TopicReader) Commit(ctx context.Context, msg *topicreader.Message) erro
 	return nil
 }
 
+type TopicWriter struct {
+	writer *topicwriter.Writer
+}
+
+func (w *TopicWriter) Write(ctx context.Context, msg string) error {
+	ctxWithTimeout, cancel := context.WithTimeout(ctx, DEFAULT_TIMEOUT)
+	defer cancel()
+	err := w.writer.Write(ctxWithTimeout,
+		topicwriter.Message{Data: strings.NewReader(msg)},
+	)
+	if err != nil {
+		return HandleRequestError(ctxWithTimeout, err)
+	}
+	return nil
+}
+
 type TopicClient struct {
 	client topic.Client
 }
@@ -101,6 +119,26 @@ func (c *TopicClient) StartReader(consumer string, path string) (*TopicReader, e
 	var topicReader TopicReader
 	topicReader.reader = reader
 	return &topicReader, nil
+}
+
+func (c *TopicClient) StartWriter(path string) (*TopicWriter, error) {
+	writer, err := c.client.StartWriter(path)
+	if err != nil {
+		return nil, err
+	}
+	var topicWriter TopicWriter
+	topicWriter.writer = writer
+	return &topicWriter, nil
+}
+
+func (c *TopicClient) Create(ctx context.Context, path string) error {
+	ctxWithTimeout, cancel := context.WithTimeout(ctx, DEFAULT_TIMEOUT)
+	defer cancel()
+	err := c.client.Create(ctxWithTimeout, path)
+	if err != nil {
+		return HandleRequestError(ctx, err)
+	}
+	return nil
 }
 
 func (c *TopicClient) Describe(ctx context.Context, path string) (topictypes.TopicDescription, error) {
