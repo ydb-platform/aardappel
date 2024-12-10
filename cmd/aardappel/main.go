@@ -145,6 +145,31 @@ func doMain(ctx context.Context, config configInit.Config, srcDb *client.TopicCl
 			ctx, config.InstanceId, config.CmdQueue.Path, config.CmdQueue.Consumer, dstDb.TopicClient)
 	}
 
+	var dlQueue *processor.DLQueue
+
+	// Test: write to topic message
+	{
+		err := dstDb.TopicClient.Create(ctx, "dlq_test")
+		if err != nil {
+			xlog.Fatal(ctx, "Unable to create topic dlq_test", zap.Error(err))
+		}
+		topicWriter, err := dstDb.TopicClient.StartWriter(config.DLQueue.Path)
+		if err != nil {
+			xlog.Fatal(ctx, "Unable to start topic dlq_test", zap.Error(err))
+		}
+		err = topicWriter.Write(ctx, "aaa")
+	}
+
+	if config.DLQueue != nil {
+		xlog.Debug(ctx, "Dead letter queue present in config",
+			zap.String("path", config.DLQueue.Path))
+		topicWriter, err := dstDb.TopicClient.StartWriter(config.DLQueue.Path)
+		if err != nil {
+			xlog.Fatal(ctx, "Unable to start writer for dlq", zap.Error(err))
+		}
+		dlQueue = processor.NewDlQueue(ctx, topicWriter)
+	}
+
 	prc, err := processor.NewProcessor(ctx, totalPartitions, config.StateTable, dstDb.TableClient, config.InstanceId, config.KeyFilter)
 	if err != nil {
 		xlog.Fatal(ctx, "Unable to create processor", zap.Error(err))
@@ -171,7 +196,7 @@ func doMain(ctx context.Context, config configInit.Config, srcDb *client.TopicCl
 			xlog.Fatal(ctx, "Unable to init dst table")
 		}
 		xlog.Debug(ctx, "Start reading")
-		go topicReader.ReadTopic(ctx, config.Streams[i].SrcTopic, uint32(i), reader, prc, topicPartsCountMap[i], conflictHandler)
+		go topicReader.ReadTopic(ctx, config.Streams[i].SrcTopic, uint32(i), reader, prc, topicPartsCountMap[i], conflictHandler, dlQueue)
 	}
 
 	lockExecutor := func(fn func(context.Context, table.Session, table.Transaction) error) error {

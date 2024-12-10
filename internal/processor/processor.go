@@ -115,6 +115,17 @@ func NewCmdQueueConflictHandler(ctx context.Context, instanceId string, path str
 	return &handler
 }
 
+type DLQueue struct {
+	Writer *client.TopicWriter
+	Lock   sync.Mutex
+}
+
+func NewDlQueue(ctx context.Context, writer *client.TopicWriter) *DLQueue {
+	var queue DLQueue
+	queue.Writer = writer
+	return &queue
+}
+
 func readWithTimeout(ctx context.Context, reader *client.TopicReader) (*topicreader.Message, error, bool) {
 	timingCtx, cancel := context.WithTimeout(ctx, time.Second*5)
 	defer cancel()
