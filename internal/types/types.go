@@ -7,9 +7,14 @@ import "encoding/json"
 type TxOperationType uint8
 
 const (
+	// topic message type
 	TxOperationUpdate  TxOperationType = 0
 	TxOperationErase   TxOperationType = 1
 	TxOperationUnknown TxOperationType = 2
+
+	// topic problem strategy
+	ProblemStrategyStop     = "STOP"
+	ProblemStrategyContinue = "CONTINUE"
 )
 
 func (o TxOperationType) String() string {

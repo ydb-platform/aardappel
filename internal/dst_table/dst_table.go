@@ -46,7 +46,6 @@ func NewDstTable(client *client.TableClient, tablePath string) *DstTable {
 
 func (dstTable *DstTable) DescribeTable(ctx context.Context) (*options.Description, error) {
 	var desc options.Description
-	// раньше зависало, теперь упадет с тем, что невозможно заинить таблицу
 	err := dstTable.client.Do(ctx, func(ctx context.Context, s table.Session) error {
 		var err error
 		desc, err = s.DescribeTable(ctx, dstTable.tablePath)

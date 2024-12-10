@@ -32,9 +32,11 @@ streams:
   - src_topic: "producer1/cf1"         # Path of the cdc source topic for the 1st replica table
     consumer: "c1"                     # Topic consumer name in a cdc source topic for the 1st replica table
     dst_table: "/Root/test/table1_rep" # Path of the 1st replica table (should exist and have compatible schema)
+    problem_strategy: "stop"           # What to do on some problem (stop, continue)
   - src_topic: "producer2/cf1"         # Path of the cdc source topic for the 2nd replica table
     consumer: "c1"                     # Topic consumer name in a cdc source topic for the 2nd replica table
     dst_table: "/Root/test/table2_rep" # Path of the 2nd replica table (should exist and have compatible schema)
+    problem_strategy: "continue"       # What to do on some problem (stop, continue)
 
 ## Max timeout to analise missed heartbeat in seconds. If we don't get quorum during this interval
 ## the warning message will be written to the log.
@@ -48,3 +50,7 @@ log_level: "debug"
 cmd_topic:
   path: aardappel_command
   consumer: c1
+
+## Dead letter queue. In this topic you may get events that haven't processed because they could not be applied consistently
+dead_letter_queue:
+  path: dlq

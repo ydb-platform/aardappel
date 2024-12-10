@@ -85,7 +85,6 @@ func (ht *HeartBeatTracker) AddHb(data types.HbData) error {
 	if ok {
 		if types.NewPosition(hb).LessThan(*types.NewPosition(data)) {
 			// Got new heartbeat for stream - we can commit previous one
-			// При потери сети ошибка игнорируется, ардапл завершится, только если в другом месте будет ошибка
 			err := hb.CommitTopic()
 			if err != nil {
 				return fmt.Errorf("unable to commit topic during update HB %w, stepId: %d, txId: %d", err,

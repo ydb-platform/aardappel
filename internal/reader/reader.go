@@ -15,6 +15,13 @@ import (
 	"sync"
 )
 
+type StreamInfo struct {
+	Id              uint32
+	TopicPath       string
+	PartCount       int
+	ProblemStrategy string
+}
+
 type TopicData struct {
 	Update   json.RawMessage `json:"update"`
 	Erase    json.RawMessage `json:"erase"`
@@ -73,21 +80,20 @@ func MakeTopicReaderGuard() (topicoptions.GetPartitionStartOffsetFunc, UpdateOff
 func serializeKey(key []json.RawMessage) string {
 	data, err := json.Marshal(key)
 	if err != nil {
-		return "underfined"
+		return "undefined"
 	}
 	return string(data)
 }
 
-func WriteAllProblemTxsUntilNextHb(ctx context.Context, topicPath string, readerId uint32, reader *client.TopicReader, channel processor.Channel, lastHb map[int64]types.Position, hb types.Position, partsCount int) {
-	var partsIsDone map[int64]bool
+func WriteAllProblemTxsUntilNextHb(ctx context.Context, streamInfo StreamInfo, reader *client.TopicReader, channel processor.Channel, lastHb map[int64]types.Position, hb types.Position, dlQueue *processor.DLQueue) {
+	partsIsDone := make(map[int64]bool)
 	for part, partHb := range lastHb {
 		if hb.LessThan(partHb) {
 			partsIsDone[part] = true
 		}
 	}
-	for ctx.Err() == nil && len(partsIsDone) < partsCount {
-		// done? после этой функции безусовный xlog.fatal
-		msg, err := reader.ReadMessageWithTimeout(ctx)
+	for ctx.Err() == nil && len(partsIsDone) < streamInfo.PartCount {
+		msg, err := reader.ReadMessage(ctx)
 		if err != nil {
 			xlog.Error(ctx, "Unable to read message", zap.Error(err))
 			return
@@ -105,20 +111,27 @@ func WriteAllProblemTxsUntilNextHb(ctx context.Context, topicPath string, reader
 			return
 		}
 		if topicData.Update != nil || topicData.Erase != nil {
-			data, err := rd.ParseTxData(ctx, jsonData, readerId)
+			data, err := rd.ParseTxData(ctx, jsonData, streamInfo.Id)
 			if err != nil {
 				xlog.Error(ctx, "ParseTxData: Error parsing tx data", zap.Error(err))
 				return
 			}
 
 			if partHb, ok := lastHb[msg.PartitionID()]; ok && (types.Position{data.Step, data.TxId}.LessThan(partHb)) {
+				txInfo := fmt.Sprintf("{\"topic\":\"%v\",\"key\":%v,\"ts\":[%v,%v]}", streamInfo.TopicPath, serializeKey(data.KeyValues), data.Step, data.TxId)
 				errString := fmt.Sprintf("Unexpected timestamp in stream, last hb timestamp:[%v,%v],"+
-					"got tx {\"topic\":\"%v\",\"key\":%v,\"ts\":[%v,%v]}",
-					hb.Step, hb.TxId, topicPath, serializeKey(data.KeyValues), data.Step, data.TxId)
+					"got tx %v", hb.Step, hb.TxId, txInfo)
 				xlog.Error(ctx, errString)
+
+				if dlQueue != nil {
+					err := dlQueue.Writer.Write(ctx, errString)
+					if err != nil {
+						xlog.Error(ctx, "Unable to write into dead letter queue", zap.Error(err), zap.String("tx", txInfo))
+					}
+				}
 			}
 		} else if topicData.Resolved != nil {
-			data, err := rd.ParseHBData(ctx, jsonData, types.StreamId{readerId, msg.PartitionID()})
+			data, err := rd.ParseHBData(ctx, jsonData, types.StreamId{streamInfo.Id, msg.PartitionID()})
 			if err != nil {
 				xlog.Error(ctx, "ParseTxData: Error parsing hb data", zap.Error(err))
 				return
@@ -131,8 +144,8 @@ func WriteAllProblemTxsUntilNextHb(ctx context.Context, topicPath string, reader
 	}
 }
 
-func ReadTopic(ctx context.Context, topicPath string, readerId uint32, reader *client.TopicReader,
-	channel processor.Channel, partsCount int, handler processor.ConflictHandler, updateOffsetCb UpdateOffsetFunc) {
+func ReadTopic(ctx context.Context, streamInfo StreamInfo, reader *client.TopicReader, channel processor.Channel,
+	handler processor.ConflictHandler, updateOffsetCb UpdateOffsetFunc, dlQueue *processor.DLQueue) {
 	var mu sync.Mutex
 	lastHb := make(map[int64]types.Position)
 	// returns true - pass item, false - skip item
@@ -143,16 +156,16 @@ func ReadTopic(ctx context.Context, topicPath string, readerId uint32, reader *c
 			if handler == nil {
 				xlog.Error(ctx, "Command topic is not configured, unable to receive external instructions on actions, stopping processing.")
 			} else {
-				rv := handler.Handle(ctx, topicPath, key, data.Step, data.TxId)
+				rv := handler.Handle(ctx, streamInfo.TopicPath, key, data.Step, data.TxId)
 				if rv >= 0 {
 					if rv == 0 {
-						xlog.Info(ctx, "skip message", zap.String("topic", topicPath),
+						xlog.Info(ctx, "skip message", zap.String("topic", streamInfo.TopicPath),
 							zap.String("key", key),
 							zap.Uint64("step_id", data.Step),
 							zap.Uint64("tx_id", data.TxId))
 						return false
 					} else {
-						xlog.Info(ctx, "apply out of order message", zap.String("topic", topicPath),
+						xlog.Info(ctx, "apply out of order message", zap.String("topic", streamInfo.TopicPath),
 							zap.String("key", key),
 							zap.Uint64("step_id", data.Step),
 							zap.Uint64("tx_id", data.TxId))
@@ -161,29 +174,47 @@ func ReadTopic(ctx context.Context, topicPath string, readerId uint32, reader *c
 				}
 			}
 
+			txInfo := fmt.Sprintf("{\"topic\":\"%v\",\"key\":%v,\"ts\":[%v,%v]}", streamInfo.TopicPath, key, data.Step, data.TxId)
 			errString := fmt.Sprintf("Unexpected timestamp in stream, last hb ts:[%v,%v], "+
-				"got tx {\"topic\":\"%v\",\"key\":%v,\"ts\":[%v,%v]}",
-				lastHb[part].Step, lastHb[part].TxId, topicPath, key, data.Step, data.TxId)
+				"got tx %v", lastHb[part].Step, lastHb[part].TxId, txInfo)
+			xlog.Error(ctx, errString)
+			if streamInfo.ProblemStrategy == types.ProblemStrategyContinue {
+				if dlQueue != nil {
+					err := dlQueue.Write(ctx, errString)
+					if err != nil {
+						xlog.Fatal(ctx, "Unable to write into dead letter queue", zap.Error(err), zap.String("tx", txInfo))
+					}
+				}
+				xlog.Info(ctx, "skip message", zap.String("topic", streamInfo.TopicPath),
+					zap.String("key", key),
+					zap.Uint64("step_id", data.Step),
+					zap.Uint64("tx_id", data.TxId))
+				return false
+			}
 			stopErr := channel.SaveReplicationState(ctx, processor.REPLICATION_FATAL_ERROR, errString)
 			if stopErr != nil {
 				xlog.Fatal(ctx, errString,
 					zap.NamedError("this issue was not stored in the state table due to double error", stopErr))
 			}
-			WriteAllProblemTxsUntilNextHb(ctx, topicPath, readerId, reader, channel, lastHb, hb, partsCount)
+			if dlQueue != nil {
+				err := dlQueue.Write(ctx, errString)
+				if err != nil {
+					xlog.Fatal(ctx, "Unable to write into dead letter queue", zap.Error(err), zap.String("tx", txInfo))
+				}
+			}
+			WriteAllProblemTxsUntilNextHb(ctx, streamInfo, reader, channel, lastHb, hb, dlQueue)
 			xlog.Fatal(ctx, errString)
 		}
 		return true
 	}
 
 	defer func() {
-		// не зависал, если случается разрыв сети на этом моменте, то как будто ничего страшного, так как оно закрывается если ардапель стопается?
 		err := reader.Close(ctx)
 		xlog.Error(ctx, "stop reader call returns", zap.Error(err))
 	}()
 
 	for ctx.Err() == nil {
-		// Завершится с сообщением об таймауте при чтении
-		msg, err := reader.ReadMessageWithTimeout(ctx)
+		msg, err := reader.ReadMessage(ctx)
 		if err != nil {
 			xlog.Fatal(ctx, "Unable to read message", zap.Error(err))
 			return
@@ -204,7 +235,7 @@ func ReadTopic(ctx context.Context, topicPath string, readerId uint32, reader *c
 			return
 		}
 		if topicData.Update != nil || topicData.Erase != nil {
-			data, err := rd.ParseTxData(ctx, jsonData, readerId)
+			data, err := rd.ParseTxData(ctx, jsonData, streamInfo.Id)
 			if err != nil {
 				xlog.Error(ctx, "ParseTxData: Error parsing tx data", zap.Error(err))
 				return
@@ -228,7 +259,7 @@ func ReadTopic(ctx context.Context, topicPath string, readerId uint32, reader *c
 
 			// Add tx to txQueue
 		} else if topicData.Resolved != nil {
-			data, err := rd.ParseHBData(ctx, jsonData, types.StreamId{readerId, msg.PartitionID()})
+			data, err := rd.ParseHBData(ctx, jsonData, types.StreamId{streamInfo.Id, msg.PartitionID()})
 			if err != nil {
 				xlog.Error(ctx, "ParseTxData: Error parsing hb data", zap.Error(err))
 				return

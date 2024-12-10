@@ -88,7 +88,6 @@ func DoReplication(ctx context.Context, prc *processor.Processor, dstTables []*d
 func createReplicaStateTable(ctx context.Context, client *client.TableClient, stateTable string) error {
 	query := fmt.Sprintf("CREATE TABLE IF NOT EXISTS %v (id Utf8, step_id Uint64, tx_id Uint64, state Utf8, stage Utf8, "+
 		"last_msg Utf8, lock_owner Utf8, lock_deadline Timestamp, PRIMARY KEY(id))", stateTable)
-	// раньше зависало, теперь нет, упадет ч тем, что не сможет получить таймаут
 	return client.Do(ctx, func(ctx context.Context, s table.Session) error {
 		return s.ExecuteSchemeQuery(ctx, query, nil)
 	})
@@ -102,7 +101,6 @@ func initReplicaStateTable(ctx context.Context, client *client.TableClient, stat
 	)
 	initQuery := fmt.Sprintf("INSERT INTO %v (id, step_id, tx_id, state, stage) VALUES ($instanceId,0,0, $state, $stage)",
 		stateTable)
-	// раньше зависало, теперь упадет, что не удалось заинить таблицу из-за таймаута
 	err := client.DoTx(ctx,
 		func(ctx context.Context, tx table.TransactionActor) error {
 			_, err := tx.Execute(ctx, initQuery, param)
@@ -121,7 +119,6 @@ func doMain(ctx context.Context, config configInit.Config, srcDb *client.TopicCl
 	var streamDbgInfos []string
 	topicPartsCountMap := make(map[int]int)
 	for i := 0; i < len(config.Streams); i++ {
-		// раньше зависало, теперь нет, упадет с ошибкой таймаута при попытке описать топик
 		desc, err := srcDb.Describe(ctx, config.Streams[i].SrcTopic)
 		if err != nil {
 			xlog.Fatal(ctx, "Unable to describe topic",
@@ -146,6 +143,17 @@ func doMain(ctx context.Context, config configInit.Config, srcDb *client.TopicCl
 			ctx, config.InstanceId, config.CmdQueue.Path, config.CmdQueue.Consumer, dstDb.TopicClient)
 	}
 
+	var dlQueue *processor.DLQueue
+	if config.DLQueue != nil {
+		xlog.Info(ctx, "Dead letter queue present in config",
+			zap.String("path", config.DLQueue.Path))
+		topicWriter, err := dstDb.TopicClient.StartWriter(config.DLQueue.Path)
+		if err != nil {
+			xlog.Fatal(ctx, "Unable to start writer for dlq", zap.Error(err))
+		}
+		dlQueue = processor.NewDlQueue(ctx, topicWriter)
+	}
+
 	prc, err := processor.NewProcessor(ctx, totalPartitions, config.StateTable, dstDb.TableClient, config.InstanceId, config.KeyFilter)
 	if err != nil {
 		xlog.Fatal(ctx, "Unable to create processor", zap.Error(err))
@@ -160,7 +168,6 @@ func doMain(ctx context.Context, config configInit.Config, srcDb *client.TopicCl
 
 	for i := 0; i < len(config.Streams); i++ {
 		startCb, updateCb := topicReader.MakeTopicReaderGuard()
-		// не зависнет, ошибки не будет, упадет дальше
 		reader, err := srcDb.StartReader(config.Streams[i].Consumer, config.Streams[i].SrcTopic,
 			topicoptions.WithReaderGetPartitionStartOffset(startCb))
 
@@ -175,9 +182,14 @@ func doMain(ctx context.Context, config configInit.Config, srcDb *client.TopicCl
 		if err != nil {
 			xlog.Fatal(ctx, "Unable to init dst table")
 		}
+
+		streamInfo := topicReader.StreamInfo{
+			Id:              uint32(i),
+			TopicPath:       config.Streams[i].SrcTopic,
+			PartCount:       topicPartsCountMap[i],
+			ProblemStrategy: config.Streams[i].ProblemStrategy}
 		xlog.Debug(ctx, "Start reading")
-		go topicReader.ReadTopic(ctx, config.Streams[i].SrcTopic,
-			uint32(i), reader, prc, topicPartsCountMap[i], conflictHandler, updateCb)
+		go topicReader.ReadTopic(ctx, streamInfo, reader, prc, conflictHandler, updateCb, dlQueue)
 	}
 
 	lockExecutor := func(fn func(context.Context, table.Session, table.Transaction) error) error {
@@ -262,7 +274,6 @@ func main() {
 		dstOpts = append(dstOpts, ydb.WithBalancer(balancers.SingleConn()))
 	}
 
-	// не зависнет, ошибку не вернет, упадет дальше
 	dstDb, err := client.NewYdbClient(ctx, config.DstConnectionString, dstOpts...)
 	if err != nil {
 		xlog.Fatal(ctx, "Unable to connect to dst cluster", zap.Error(err))
@@ -290,7 +301,6 @@ func main() {
 		config.InstanceId, owner,
 		time.Duration(config.MaxExpHbInterval*2)*time.Second)
 
-	// завершится с логом https://paste.nebius.dev/paste/1dc40974-6f27-417f-94da-5bf95d5d4a39.html
 	lockChannel := locker.LockerContext(ctx)
 	var cont bool
 	cont = true
@@ -304,7 +314,6 @@ func main() {
 				continue
 			}
 			lockErrCnt = 0
-			// не зависнет, ошибку не вернет, упадет дальше
 			srcDb, err := client.NewYdbClient(lockCtx, config.SrcConnectionString, srcOpts...)
 			if err != nil {
 				xlog.Fatal(ctx, "Unable to connect to src cluster", zap.Error(err))
