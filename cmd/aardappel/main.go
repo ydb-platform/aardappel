@@ -19,6 +19,7 @@ import (
 	"github.com/ydb-platform/ydb-go-sdk/v3/balancers"
 	"github.com/ydb-platform/ydb-go-sdk/v3/table"
 	ydbTypes "github.com/ydb-platform/ydb-go-sdk/v3/table/types"
+	"github.com/ydb-platform/ydb-go-sdk/v3/topic/topicoptions"
 	"go.uber.org/zap"
 	"log"
 	"os"
@@ -156,9 +157,13 @@ func doMain(ctx context.Context, config configInit.Config, srcDb *client.TopicCl
 	}
 
 	var dstTables []*dst_table.DstTable
+
 	for i := 0; i < len(config.Streams); i++ {
+		startCb, updateCb := topicReader.MakeTopicReaderGuard()
 		// не зависнет, ошибки не будет, упадет дальше
-		reader, err := srcDb.StartReader(config.Streams[i].Consumer, config.Streams[i].SrcTopic)
+		reader, err := srcDb.StartReader(config.Streams[i].Consumer, config.Streams[i].SrcTopic,
+			topicoptions.WithReaderGetPartitionStartOffset(startCb))
+
 		if err != nil {
 			xlog.Fatal(ctx, "Unable to create topic reader",
 				zap.String("consumer", config.Streams[i].Consumer),
@@ -171,7 +176,8 @@ func doMain(ctx context.Context, config configInit.Config, srcDb *client.TopicCl
 			xlog.Fatal(ctx, "Unable to init dst table")
 		}
 		xlog.Debug(ctx, "Start reading")
-		go topicReader.ReadTopic(ctx, config.Streams[i].SrcTopic, uint32(i), reader, prc, topicPartsCountMap[i], conflictHandler)
+		go topicReader.ReadTopic(ctx, config.Streams[i].SrcTopic,
+			uint32(i), reader, prc, topicPartsCountMap[i], conflictHandler, updateCb)
 	}
 
 	lockExecutor := func(fn func(context.Context, table.Session, table.Transaction) error) error {

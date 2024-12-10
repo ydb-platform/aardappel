@@ -9,6 +9,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"github.com/ydb-platform/ydb-go-sdk/v3/topic/topicoptions"
 	"go.uber.org/zap"
 	"io"
 	"sync"
@@ -18,6 +19,55 @@ type TopicData struct {
 	Update   json.RawMessage `json:"update"`
 	Erase    json.RawMessage `json:"erase"`
 	Resolved json.RawMessage `json:"resolved"`
+}
+
+type TopicReaderGuard struct {
+	lastPosition map[int64]int64
+	lock         sync.Mutex
+}
+
+type UpdateOffsetFunc func(offset int64, partitionID int64)
+
+func MakeTopicReaderGuard() (topicoptions.GetPartitionStartOffsetFunc, UpdateOffsetFunc) {
+	var guard TopicReaderGuard
+	guard.lastPosition = make(map[int64]int64)
+	updateOffsetFunc := func(offset int64, partitionID int64) {
+		guard.lock.Lock()
+		defer func() {
+			guard.lock.Unlock()
+		}()
+		guard.lastPosition[partitionID] = offset
+	}
+
+	getPartStartOffsetFunc := func(ctx context.Context,
+		req topicoptions.GetPartitionStartOffsetRequest) (topicoptions.GetPartitionStartOffsetResponse, error) {
+
+		guard.lock.Lock()
+		defer func() {
+			guard.lock.Unlock()
+		}()
+
+		var resp topicoptions.GetPartitionStartOffsetResponse
+		offset, ok := guard.lastPosition[req.PartitionID]
+
+		if ok == true {
+			xlog.Info(ctx, "Start partition reading from offset",
+				zap.String("topic", req.Topic),
+				zap.Int64("PartitionID", req.PartitionID),
+				zap.Int64("offset", offset))
+
+			resp.StartFrom(offset)
+		} else {
+			xlog.Info(ctx, "Start partition reading from begin",
+				zap.String("topic", req.Topic),
+				zap.Int64("PartitionID", req.PartitionID))
+		}
+
+		return resp, nil
+
+	}
+
+	return getPartStartOffsetFunc, updateOffsetFunc
 }
 
 func serializeKey(key []json.RawMessage) string {
@@ -81,7 +131,8 @@ func WriteAllProblemTxsUntilNextHb(ctx context.Context, topicPath string, reader
 	}
 }
 
-func ReadTopic(ctx context.Context, topicPath string, readerId uint32, reader *client.TopicReader, channel processor.Channel, partsCount int, handler processor.ConflictHandler) {
+func ReadTopic(ctx context.Context, topicPath string, readerId uint32, reader *client.TopicReader,
+	channel processor.Channel, partsCount int, handler processor.ConflictHandler, updateOffsetCb UpdateOffsetFunc) {
 	var mu sync.Mutex
 	lastHb := make(map[int64]types.Position)
 	// returns true - pass item, false - skip item
@@ -137,6 +188,9 @@ func ReadTopic(ctx context.Context, topicPath string, readerId uint32, reader *c
 			xlog.Fatal(ctx, "Unable to read message", zap.Error(err))
 			return
 		}
+
+		updateOffsetCb(msg.Offset, msg.PartitionID())
+
 		jsonData, err := io.ReadAll(msg)
 		if err != nil {
 			xlog.Error(ctx, "Unable to read all", zap.Error(err))
