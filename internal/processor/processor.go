@@ -712,7 +712,7 @@ func (processor *Processor) PushAsSingleTx(ctx context.Context, data dst_table.P
 	param := append(data.Parameters, *stateParam...)
 
 	// Завершится из-за таймаута
-	ctxWithTimeout, cancel := context.WithTimeout(ctx, 1*time.Millisecond)
+	ctxWithTimeout, cancel := context.WithTimeout(ctx, client.DEFAULT_TIMEOUT)
 	defer cancel()
 	_, err := tx.Execute(ctxWithTimeout, data.Query+processor.stateStoreQuery, &param, options.WithCommit())
 	return client.HandleRequestError(ctx, err)
