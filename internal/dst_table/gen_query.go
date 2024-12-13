@@ -283,7 +283,7 @@ func ConvertToYDBValue(v json.RawMessage, t ydb_types.Type) (ydb_types.Value, er
 		if err = json.Unmarshal(v, &value); err == nil {
 			u, err := uuid.Parse(value)
 			if err != nil {
-				return nil, fmt.Errorf("ConvertToYDBValue: convert to uuid value: %w, %v", err, value)
+				return nil, fmt.Errorf("ConvertToYDBValue: convert to uuid value: %w", err)
 			}
 			return ydb_types.UuidValue(u), nil
 		}
