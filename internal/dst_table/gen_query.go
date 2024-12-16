@@ -7,6 +7,7 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"fmt"
+	"github.com/google/uuid"
 	"github.com/ydb-platform/ydb-go-sdk/v3/table"
 	ydb_types "github.com/ydb-platform/ydb-go-sdk/v3/table/types"
 	"go.uber.org/zap"
@@ -116,16 +117,6 @@ func NewQueryStatement() *QueryStatement {
 		Statement: "",
 		Params:    make([]table.ParameterOption, 0),
 	}
-}
-
-func StringToUUID(s string) ([16]byte, error) {
-	var byteArray [16]byte
-	byteSlice := []byte(s)
-	if len(byteSlice) > 16 {
-		return byteArray, fmt.Errorf("StringToUUID: string is too long to fit in [16]byte")
-	}
-	copy(byteArray[:], byteSlice)
-	return byteArray, nil
 }
 
 func ConvertToYDBValue(v json.RawMessage, t ydb_types.Type) (ydb_types.Value, error) {
@@ -290,11 +281,11 @@ func ConvertToYDBValue(v json.RawMessage, t ydb_types.Type) (ydb_types.Value, er
 	case ydb_types.TypeUUID:
 		var value string
 		if err = json.Unmarshal(v, &value); err == nil {
-			uuid, err := StringToUUID(value)
+			u, err := uuid.Parse(value)
 			if err != nil {
 				return nil, fmt.Errorf("ConvertToYDBValue: convert to uuid value: %w", err)
 			}
-			return ydb_types.UUIDValue(uuid), nil
+			return ydb_types.UuidValue(u), nil
 		}
 		return nil, fmt.Errorf("ConvertToYDBValue: unmurshal to uuid value: %w", err)
 	}
