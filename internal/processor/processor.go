@@ -115,6 +115,27 @@ func NewCmdQueueConflictHandler(ctx context.Context, instanceId string, path str
 	return &handler
 }
 
+type DLQueue struct {
+	Writer *client.TopicWriter
+	Lock   sync.Mutex
+}
+
+func NewDlQueue(ctx context.Context, writer *client.TopicWriter) *DLQueue {
+	var queue DLQueue
+	queue.Writer = writer
+	return &queue
+}
+
+func (queue *DLQueue) Write(ctx context.Context, msg string) error {
+	queue.Lock.Lock()
+	err := queue.Writer.Write(ctx, msg)
+	if err != nil {
+		xlog.Error(ctx, "Unable to write into dead letter queue", zap.Error(err), zap.String("msg", msg))
+	}
+	queue.Lock.Unlock()
+	return nil
+}
+
 func readWithTimeout(ctx context.Context, reader *client.TopicReader) (*topicreader.Message, error, bool) {
 	timingCtx, cancel := context.WithTimeout(ctx, time.Second*5)
 	defer cancel()
@@ -129,7 +150,6 @@ func (this *CmdQueueConflictHandler) Handle(ctx context.Context, streamTopicPath
 	this.Lock.Lock()
 	defer this.Lock.Unlock()
 
-	// Если тут упадет, то только если в другом месте упадет...
 	reader, err := this.Topic.StartReader(this.Consumer, this.Path)
 	if err != nil {
 		xlog.Fatal(ctx, "Unable to read from specified command topic",
@@ -248,7 +268,6 @@ func selectReplicationState(ctx context.Context, client *client.TableClient, sta
 	var lastMsg *string
 	var stage *string
 
-	// Раньше зависало, сейчас упадет сразу с ошибкой, что не удалось создать процессов из-за таймаута
 	err := client.DoTx(ctx,
 		func(ctx context.Context, tx table.TransactionActor) error {
 			res, err := tx.Execute(ctx, stateQuery, param)
@@ -348,7 +367,6 @@ func (processor *Processor) EnqueueHb(ctx context.Context, hb types.HbData) {
 		zap.Int64("partition_id:", hb.StreamId.PartitionId),
 		zap.Bool("willSkip", types.NewPosition(hb).LessThan(lastPosition)))
 	if types.NewPosition(hb).LessThan(lastPosition) {
-		// Ошибку будет не заметно, только если в другом месте упадет
 		err := hb.CommitTopic()
 		if err != nil {
 			xlog.Fatal(ctx, "unable to commit topic", zap.Error(err))
@@ -385,7 +403,6 @@ func (processor *Processor) SaveReplicationState(ctx context.Context, status str
 	stopQuery := fmt.Sprintf("UPSERT INTO %v (id, state, last_msg) VALUES ($instanceId,$state,$lastError)",
 		processor.stateTablePath)
 
-	// Раньше зависало, сейчас нет, после этого xlog.fatal, так что ардапель должен нормально завершиться
 	return processor.dstServerClient.DoTx(ctx,
 		func(ctx context.Context, tx table.TransactionActor) error {
 			_, err := tx.Execute(ctx, stopQuery, param)
@@ -401,7 +418,6 @@ func (processor *Processor) EnqueueTx(ctx context.Context, tx types.TxData) {
 		zap.Uint32("reader_id", tx.TableId),
 		zap.Bool("willSkip", (types.Position{tx.Step, tx.TxId}.LessThan(lastPosition))))
 	if (types.Position{tx.Step, tx.TxId}.LessThan(lastPosition)) {
-		//  Ошибка незаметна, ток если где то в другом месте завершится...
 		err := tx.CommitTopic()
 		if err != nil {
 			xlog.Fatal(ctx, "unable to commit topic", zap.Error(err))
@@ -653,7 +669,6 @@ func (processor *Processor) DoInitialScan(ctx context.Context, dstTables []*dst_
 	}
 
 	for i := 0; i < len(txs); i++ {
-		// Ошибка незаметна, так что ток если в другом месте обнаружится
 		err := txs[i].CommitTopic()
 		if err != nil {
 			return nil, fmt.Errorf("%w; Unable to commit topic fot dataTx", err)
@@ -664,7 +679,6 @@ func (processor *Processor) DoInitialScan(ctx context.Context, dstTables []*dst_
 		xlog.Debug(ctx, "commit hb in topic",
 			zap.Uint64("step", processor.initialScanPos.Step),
 			zap.Uint64("tx_id", processor.initialScanPos.TxId))
-		// Ошибка не заметна, ток если в другом месте стопнется
 		err := processor.initialScanPos.CommitTopic()
 		if err != nil {
 			return nil, fmt.Errorf("%w; Unable to commit topic fot hb", err)
@@ -711,7 +725,6 @@ func (processor *Processor) PushAsSingleTx(ctx context.Context, data dst_table.P
 	)
 	param := append(data.Parameters, *stateParam...)
 
-	// Завершится из-за таймаута
 	ctxWithTimeout, cancel := context.WithTimeout(ctx, client.DEFAULT_TIMEOUT)
 	defer cancel()
 	_, err := tx.Execute(ctxWithTimeout, data.Query+processor.stateStoreQuery, &param, options.WithCommit())
@@ -719,7 +732,6 @@ func (processor *Processor) PushAsSingleTx(ctx context.Context, data dst_table.P
 }
 
 func (processor *Processor) PushTxs(ctx context.Context, data dst_table.PushQuery, tx table.Transaction) error {
-	// Завершится из-за таймаута
 	ctxWithTimeout, cancel := context.WithTimeout(ctx, client.DEFAULT_TIMEOUT)
 	defer cancel()
 	_, err := tx.Execute(ctxWithTimeout, data.Query, &data.Parameters, options.WithCommit())
@@ -757,7 +769,6 @@ func (processor *Processor) DoReplication(ctx context.Context, dstTables []*dst_
 	processor.lastPosition.Store(*types.NewPosition(batch.Hb))
 
 	for i := 0; i < len(batch.TxData); i++ {
-		// Ошбика не заметна, ток если в другом месте упадет
 		err := batch.TxData[i].CommitTopic()
 		if err != nil {
 			return nil, fmt.Errorf("%w; Unable to commit topic fot dataTx", err)
@@ -767,7 +778,6 @@ func (processor *Processor) DoReplication(ctx context.Context, dstTables []*dst_
 	xlog.Debug(ctx, "commit hb in topic",
 		zap.Uint64("step", batch.Hb.Step),
 		zap.Uint64("tx_id", batch.Hb.TxId))
-	// Ошибка не заметна, ток если в другом месте упадет
 	err = batch.Hb.CommitTopic()
 	if err != nil {
 		return nil, fmt.Errorf("%w; Unable to commit topic fot hb", err)
