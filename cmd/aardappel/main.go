@@ -25,6 +25,7 @@ import (
 	"os"
 	"os/signal"
 	"reflect"
+	"runtime"
 	"syscall"
 	"time"
 )
@@ -75,6 +76,10 @@ func DoReplication(ctx context.Context, prc *processor.Processor, dstTables []*d
 		mon.CommitDuration(float64(stats.CommitDurationMs) / 1000)
 		mon.RequestSize(stats.RequestSize)
 		mon.QuorumWaitingDuration(float64(stats.QuorumWaitingDurationMs) / 1000)
+		var memStat runtime.MemStats
+		runtime.ReadMemStats(&memStat)
+		mon.HeapAllocated(memStat.HeapAlloc)
+
 	}
 	xlog.Info(ctx, "Replication step ok", zap.Int("modifications", stats.ModificationsCount),
 		zap.Float32("mps", perSecond),

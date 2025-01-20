@@ -17,6 +17,7 @@ type Metrics interface {
 	CommitDuration(s float64)
 	RequestSize(c int)
 	QuorumWaitingDuration(s float64)
+	HeapAllocated(b uint64)
 }
 
 type PromMon struct {
@@ -25,6 +26,7 @@ type PromMon struct {
 	commitLatency        prometheus.Histogram
 	requestSize          prometheus.Counter
 	quorumWaitingLatency prometheus.Histogram
+	heapAllocated        prometheus.Gauge
 	Stop                 func()
 }
 
@@ -48,11 +50,16 @@ func NewMetrics(reg *prometheus.Registry) *PromMon {
 			Help:    "Latency of waiting quorum changes on the destination cluster (seconds).",
 			Buckets: prometheus.DefBuckets,
 		}),
+		heapAllocated: prometheus.NewGauge(prometheus.GaugeOpts{
+			Name: "go_heap_allocated",
+			Help: "Size is bytes of allocated heap objects",
+		}),
 	}
 	reg.MustRegister(m.modificationsCount)
 	reg.MustRegister(m.commitLatency)
 	reg.MustRegister(m.requestSize)
 	reg.MustRegister(m.quorumWaitingLatency)
+	reg.MustRegister(m.heapAllocated)
 	return m
 }
 
@@ -100,4 +107,8 @@ func (p *PromMon) RequestSize(c int) {
 
 func (p *PromMon) QuorumWaitingDuration(s float64) {
 	p.quorumWaitingLatency.Observe(s)
+}
+
+func (p *PromMon) HeapAllocated(b uint64) {
+	p.heapAllocated.Set(float64(b))
 }
