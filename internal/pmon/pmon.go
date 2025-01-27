@@ -18,6 +18,7 @@ type Metrics interface {
 	RequestSize(c int)
 	QuorumWaitingDuration(s float64)
 	HeapAllocated(b uint64)
+	ReplicationLagEst(s float32)
 }
 
 type PromMon struct {
@@ -27,6 +28,7 @@ type PromMon struct {
 	requestSize          prometheus.Counter
 	quorumWaitingLatency prometheus.Histogram
 	heapAllocated        prometheus.Gauge
+	replicationLagEst    prometheus.Gauge
 	Stop                 func()
 }
 
@@ -54,12 +56,17 @@ func NewMetrics(reg *prometheus.Registry) *PromMon {
 			Name: "go_heap_allocated",
 			Help: "Size is bytes of allocated heap objects",
 		}),
+		replicationLagEst: prometheus.NewGauge(prometheus.GaugeOpts{
+			Name: "replication_lag_estimation",
+			Help: "The time difference between coordination time of quorum hb and local time",
+		}),
 	}
 	reg.MustRegister(m.modificationsCount)
 	reg.MustRegister(m.commitLatency)
 	reg.MustRegister(m.requestSize)
 	reg.MustRegister(m.quorumWaitingLatency)
 	reg.MustRegister(m.heapAllocated)
+	reg.MustRegister(m.replicationLagEst)
 	return m
 }
 
@@ -111,4 +118,8 @@ func (p *PromMon) QuorumWaitingDuration(s float64) {
 
 func (p *PromMon) HeapAllocated(b uint64) {
 	p.heapAllocated.Set(float64(b))
+}
+
+func (p *PromMon) ReplicationLagEst(s float32) {
+	p.replicationLagEst.Set(float64(s))
 }

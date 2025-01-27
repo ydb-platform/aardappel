@@ -6,6 +6,7 @@ import (
 	"aardappel/internal/pmon"
 	processor "aardappel/internal/processor"
 	topicReader "aardappel/internal/reader"
+	"aardappel/internal/types"
 	"aardappel/internal/util/xlog"
 	client "aardappel/internal/util/ydb"
 	"context"
@@ -58,6 +59,11 @@ func GetLockerRequestBuilder(tableName string) *ydb_locker.LockRequestBuilderImp
 	}
 }
 
+func EstimateReplicationLagSec(pos types.Position) float32 {
+	ts := time.Now().UTC()
+	return float32(uint64(ts.UnixMilli())-pos.Step) / 1000.0
+}
+
 func DoReplication(ctx context.Context, prc *processor.Processor, dstTables []*dst_table.DstTable,
 	lockExecutor func(fn func(context.Context, table.Session, table.Transaction) error) error, mon pmon.Metrics) {
 	passed := time.Now().UnixMilli()
@@ -71,6 +77,7 @@ func DoReplication(ctx context.Context, prc *processor.Processor, dstTables []*d
 	}
 	passed = time.Now().UnixMilli() - passed
 	perSecond := float32(stats.ModificationsCount) / (float32(passed) / 1000.0)
+	lag := EstimateReplicationLagSec(stats.LastHeartBeat)
 	if !reflect.ValueOf(mon).IsNil() {
 		mon.ModificationCount(stats.ModificationsCount)
 		mon.CommitDuration(float64(stats.CommitDurationMs) / 1000)
@@ -79,7 +86,7 @@ func DoReplication(ctx context.Context, prc *processor.Processor, dstTables []*d
 		var memStat runtime.MemStats
 		runtime.ReadMemStats(&memStat)
 		mon.HeapAllocated(memStat.HeapAlloc)
-
+		mon.ReplicationLagEst(lag)
 	}
 	xlog.Info(ctx, "Replication step ok", zap.Int("modifications", stats.ModificationsCount),
 		zap.Float32("mps", perSecond),
@@ -87,7 +94,8 @@ func DoReplication(ctx context.Context, prc *processor.Processor, dstTables []*d
 		zap.Uint64("last quorum HB tx_id", stats.LastHeartBeat.TxId),
 		zap.Float32("commit duration", float32(stats.CommitDurationMs)/1000),
 		zap.Int("request size", stats.RequestSize),
-		zap.Float32("quorum waiting duration", float32(stats.QuorumWaitingDurationMs)/1000))
+		zap.Float32("quorum waiting duration", float32(stats.QuorumWaitingDurationMs)/1000),
+		zap.Float32("replication lag estimation:", lag))
 }
 
 func createReplicaStateTable(ctx context.Context, client *client.TableClient, stateTable string) error {
