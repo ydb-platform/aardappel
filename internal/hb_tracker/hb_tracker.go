@@ -33,20 +33,7 @@ func NewHeartBeatTracker(total int) *HeartBeatTracker {
 	return &hbt
 }
 
-func findMissed(streams map[types.StreamId]types.HbData) []uint32 {
-	var missed []uint32
-	var expectedReader uint32
-	for _, v := range streams {
-		if v.StreamId.ReaderId > expectedReader {
-			missed = append(missed, expectedReader)
-		} else if v.StreamId.ReaderId == expectedReader {
-			expectedReader++
-		}
-	}
-	return missed
-}
-
-func (ht *HeartBeatTracker) guardLoop(ctx context.Context, timeout uint32, streamDbgInfos []string) {
+func (ht *HeartBeatTracker) guardLoop(ctx context.Context, timeout uint32) {
 	for ctx.Err() == nil {
 		// give chance to get heartbeat at the start time
 		time.Sleep(time.Duration(timeout) * time.Second)
@@ -57,25 +44,18 @@ func (ht *HeartBeatTracker) guardLoop(ctx context.Context, timeout uint32, strea
 			// so double check it to prevent mess in logs
 			lastSeenHb := ht.lastFullHbTime.Load()
 			if time.Now().Unix()-lastSeenHb > int64(timeout) {
-				missed := findMissed(ht.streams)
-				var missedReaders []string
-				for i := range missed {
-					missedReaders = append(missedReaders, streamDbgInfos[i])
-				}
-
 				xlog.Warn(ctx, "No heartbeat since "+
 					time.Unix(lastSeenHb, 0).Format(time.DateTime),
 					zap.Int("expected streams", ht.totalStreamsNum),
-					zap.Int("streams with heartbeat", len(ht.streams)),
-					zap.Strings("missed readers", missedReaders))
+					zap.Int("streams with heartbeat", len(ht.streams)))
 			}
 			ht.lock.Unlock()
 		}
 	}
 }
 
-func (ht *HeartBeatTracker) StartHbGuard(ctx context.Context, timeout uint32, streamDbgInfos []string) {
-	go ht.guardLoop(ctx, timeout, streamDbgInfos)
+func (ht *HeartBeatTracker) StartHbGuard(ctx context.Context, timeout uint32) {
+	go ht.guardLoop(ctx, timeout)
 }
 
 func (ht *HeartBeatTracker) AddHb(data types.HbData) error {

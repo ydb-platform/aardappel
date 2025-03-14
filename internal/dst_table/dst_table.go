@@ -31,16 +31,18 @@ type DstTable struct {
 	client    *client.TableClient
 	tablePath string
 	tableInfo TableMetaInfo
+	MonTag    string
 }
 
 func (d *DstTable) GetTablePath() string {
 	return d.tablePath
 }
 
-func NewDstTable(client *client.TableClient, tablePath string) *DstTable {
+func NewDstTable(client *client.TableClient, tablePath string, monTag string) *DstTable {
 	var dstTable DstTable
 	dstTable.client = client
 	dstTable.tablePath = tablePath
+	dstTable.MonTag = monTag
 	return &dstTable
 }
 

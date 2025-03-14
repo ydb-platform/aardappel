@@ -63,9 +63,14 @@ type Processor struct {
 	keyFilter       KeyFilter
 }
 
+type PerTableStats struct {
+	ModificationsCount int
+}
+
 type RequestStats struct {
 	ModificationsCount int
 	RequestSize        int
+	PerTableStats      []PerTableStats
 }
 
 type ReplicationStats struct {
@@ -74,6 +79,7 @@ type ReplicationStats struct {
 	CommitDurationMs        int64
 	RequestSize             int
 	QuorumWaitingDurationMs int64
+	PerTableStats           []PerTableStats
 }
 
 type Channel interface {
@@ -345,8 +351,8 @@ func NewProcessor(ctx context.Context, total int, stateTablePath string, client 
 	return &p, err
 }
 
-func (processor *Processor) StartHbGuard(ctx context.Context, timeout uint32, streamDbgInfos []string) {
-	processor.hbTracker.StartHbGuard(ctx, timeout, streamDbgInfos)
+func (processor *Processor) StartHbGuard(ctx context.Context, timeout uint32) {
+	processor.hbTracker.StartHbGuard(ctx, timeout)
 }
 
 func (processor *Processor) Enqueue(ctx context.Context, fn func() error) {
@@ -473,20 +479,21 @@ func (processor *Processor) assignTxsToDstTables(ctx context.Context, txs []type
 	}
 	var query dst_table.PushQuery
 	var modifications int
+	perTableStats := make([]PerTableStats, len(txDataPerTable))
 	for i := 0; i < len(txDataPerTable); i++ {
 		q, err := dstTables[i].GenQuery(ctx, txDataPerTable[i], i)
 		if err != nil {
 			return dst_table.PushQuery{}, RequestStats{}, fmt.Errorf("%w; Unable to generate query", err)
 		}
 		query.Query += q.Query
+		perTableStats[i].ModificationsCount = q.ModificationsCount
 		modifications += q.ModificationsCount
 		query.Parameters = append(query.Parameters, q.Parameters...)
-
 	}
 	size := processor.getQueryRequestSize(query)
 	xlog.Debug(ctx, "Query to perform", zap.String("query", query.Query))
 
-	return query, RequestStats{modifications, size}, nil
+	return query, RequestStats{modifications, size, perTableStats}, nil
 }
 
 func (processor *Processor) doEvent(ctx context.Context) error {
@@ -689,7 +696,8 @@ func (processor *Processor) DoInitialScan(ctx context.Context, dstTables []*dst_
 		types.Position{0, 0},
 		commitDuration,
 		requestStats.RequestSize,
-		quorumWaitingDuration}, nil
+		quorumWaitingDuration,
+		requestStats.PerTableStats}, nil
 }
 
 func (processor *Processor) FormatTx(ctx context.Context) (*TxBatch, int64, error) {
@@ -786,5 +794,6 @@ func (processor *Processor) DoReplication(ctx context.Context, dstTables []*dst_
 		*types.NewPosition(batch.Hb),
 		commitDuration,
 		requestStats.RequestSize,
-		quorumWaitingDuration}, nil
+		quorumWaitingDuration,
+		requestStats.PerTableStats}, nil
 }
