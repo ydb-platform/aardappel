@@ -17,6 +17,7 @@ type Stream struct {
 	DstTable        string `yaml:"dst_table"`
 	Consumer        string `yaml:"consumer"`
 	ProblemStrategy string `yaml:"problem_strategy"`
+	MonTag          string `yaml:"mon_tag"`
 }
 
 type MonServer struct {

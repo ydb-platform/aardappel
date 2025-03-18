@@ -2,6 +2,7 @@ package pmon
 
 import (
 	"aardappel/internal/config"
+	"aardappel/internal/util/misc"
 	"aardappel/internal/util/xlog"
 	"context"
 	"errors"
@@ -14,11 +15,39 @@ import (
 
 type Metrics interface {
 	ModificationCount(c int)
+	ModificationCountFromTopic(c int, tag string)
 	CommitDuration(s float64)
 	RequestSize(c int)
 	QuorumWaitingDuration(s float64)
 	HeapAllocated(b uint64)
 	ReplicationLagEst(s float32)
+	TopicWithoutHB(noHb bool, tag string)
+}
+
+type MonPerTable struct {
+	modificationsCountByTopic prometheus.Counter
+	topicWithoutHb            prometheus.Gauge
+}
+
+func CreatePerTableCounters(tag string, reg *prometheus.Registry) *MonPerTable {
+	m := &MonPerTable{
+		modificationsCountByTopic: prometheus.NewCounter(prometheus.CounterOpts{
+			Name:        "modifications_count_per_table",
+			Help:        "Total count of modifications per table on the destination cluster.",
+			ConstLabels: prometheus.Labels{"stream_tag": tag},
+		}),
+
+		topicWithoutHb: prometheus.NewGauge(prometheus.GaugeOpts{
+			Name:        "topic_without_hb",
+			Help:        "topic where hb was not recieved during interval",
+			ConstLabels: prometheus.Labels{"stream_tag": tag},
+		}),
+	}
+
+	reg.MustRegister(m.topicWithoutHb)
+	reg.MustRegister(m.modificationsCountByTopic)
+
+	return m
 }
 
 type PromMon struct {
@@ -29,7 +58,19 @@ type PromMon struct {
 	quorumWaitingLatency prometheus.Histogram
 	heapAllocated        prometheus.Gauge
 	replicationLagEst    prometheus.Gauge
+	perTableCounters     map[string]*MonPerTable
 	Stop                 func()
+}
+
+func lazyMetrics(mon *PromMon, tag string) *MonPerTable {
+	counter, ok := mon.perTableCounters[tag]
+	if ok {
+		return counter
+	} else {
+		tmp := CreatePerTableCounters(tag, mon.reg)
+		mon.perTableCounters[tag] = tmp
+		return tmp
+	}
 }
 
 func NewMetrics(reg *prometheus.Registry) *PromMon {
@@ -74,6 +115,8 @@ func NewPromMon(ctx context.Context, config *config.MonServer) *PromMon {
 	reg := prometheus.NewRegistry()
 
 	p := NewMetrics(reg)
+	p.perTableCounters = make(map[string]*MonPerTable)
+	p.reg = reg
 
 	server := &http.Server{
 		Addr: config.Listen,
@@ -122,4 +165,13 @@ func (p *PromMon) HeapAllocated(b uint64) {
 
 func (p *PromMon) ReplicationLagEst(s float32) {
 	p.replicationLagEst.Set(float64(s))
+}
+
+func (p *PromMon) ModificationCountFromTopic(c int, tag string) {
+	lazyMetrics(p, tag).modificationsCountByTopic.Add(float64(c))
+}
+
+func (p *PromMon) TopicWithoutHB(c bool, tag string) {
+	val := misc.TernaryIf(c, 1.0, 0.0)
+	lazyMetrics(p, tag).topicWithoutHb.Set(val)
 }

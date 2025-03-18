@@ -7,6 +7,7 @@ import (
 	processor "aardappel/internal/processor"
 	topicReader "aardappel/internal/reader"
 	"aardappel/internal/types"
+	"aardappel/internal/util/misc"
 	"aardappel/internal/util/xlog"
 	client "aardappel/internal/util/ydb"
 	"context"
@@ -87,6 +88,10 @@ func DoReplication(ctx context.Context, prc *processor.Processor, dstTables []*d
 		runtime.ReadMemStats(&memStat)
 		mon.HeapAllocated(memStat.HeapAlloc)
 		mon.ReplicationLagEst(lag)
+		for i := 0; i < len(stats.PerTableStats); i++ {
+			monTag := dstTables[i].MonTag
+			mon.ModificationCountFromTopic(stats.PerTableStats[i].ModificationsCount, monTag)
+		}
 	}
 	xlog.Info(ctx, "Replication step ok", zap.Int("modifications", stats.ModificationsCount),
 		zap.Float32("mps", perSecond),
@@ -129,17 +134,18 @@ func initReplicaStateTable(ctx context.Context, client *client.TableClient, stat
 func doMain(ctx context.Context, config configInit.Config, srcDb *client.TopicClient, dstDb *client.YdbClient,
 	locker *ydb_locker.Locker, mon pmon.Metrics) {
 	var totalPartitions int
-	var streamDbgInfos []string
 	topicPartsCountMap := make(map[int]int)
 	for i := 0; i < len(config.Streams); i++ {
-		desc, err := srcDb.Describe(ctx, config.Streams[i].SrcTopic)
+		cfgStream := &config.Streams[i]
+
+		desc, err := srcDb.Describe(ctx, cfgStream.SrcTopic)
 		if err != nil {
 			xlog.Fatal(ctx, "Unable to describe topic",
-				zap.String("src_topic", config.Streams[i].SrcTopic),
+				zap.String("src_topic", cfgStream.SrcTopic),
 				zap.Error(err))
 		}
+
 		totalPartitions += len(desc.Partitions)
-		streamDbgInfos = append(streamDbgInfos, desc.Path)
 		topicPartsCountMap[i] = len(desc.Partitions)
 	}
 
@@ -174,23 +180,25 @@ func doMain(ctx context.Context, config configInit.Config, srcDb *client.TopicCl
 
 	if config.MaxExpHbInterval != 0 {
 		xlog.Info(ctx, "start heartbeat tracker guard timer", zap.Uint32("timeout in seconds", config.MaxExpHbInterval))
-		prc.StartHbGuard(ctx, config.MaxExpHbInterval, streamDbgInfos)
+		prc.StartHbGuard(ctx, config.MaxExpHbInterval)
 	}
 
 	var dstTables []*dst_table.DstTable
 
 	for i := 0; i < len(config.Streams); i++ {
+		cfgStream := &config.Streams[i]
+		monTag := misc.TernaryIf(len(cfgStream.MonTag) > 0, cfgStream.MonTag, cfgStream.SrcTopic)
 		startCb, updateCb := topicReader.MakeTopicReaderGuard()
-		reader, err := srcDb.StartReader(config.Streams[i].Consumer, config.Streams[i].SrcTopic,
+		reader, err := srcDb.StartReader(config.Streams[i].Consumer, cfgStream.SrcTopic,
 			topicoptions.WithReaderGetPartitionStartOffset(startCb))
 
 		if err != nil {
 			xlog.Fatal(ctx, "Unable to create topic reader",
-				zap.String("consumer", config.Streams[i].Consumer),
-				zap.String("src_topic", config.Streams[i].SrcTopic),
+				zap.String("consumer", cfgStream.Consumer),
+				zap.String("src_topic", cfgStream.SrcTopic),
 				zap.Error(err))
 		}
-		dstTables = append(dstTables, dst_table.NewDstTable(dstDb.TableClient, config.Streams[i].DstTable))
+		dstTables = append(dstTables, dst_table.NewDstTable(dstDb.TableClient, cfgStream.DstTable, monTag))
 		err = dstTables[i].Init(ctx)
 		if err != nil {
 			xlog.Fatal(ctx, "Unable to init dst table")
@@ -198,9 +206,9 @@ func doMain(ctx context.Context, config configInit.Config, srcDb *client.TopicCl
 
 		streamInfo := topicReader.StreamInfo{
 			Id:              uint32(i),
-			TopicPath:       config.Streams[i].SrcTopic,
+			TopicPath:       cfgStream.SrcTopic,
 			PartCount:       topicPartsCountMap[i],
-			ProblemStrategy: config.Streams[i].ProblemStrategy}
+			ProblemStrategy: cfgStream.ProblemStrategy}
 		xlog.Debug(ctx, "Start reading")
 		go topicReader.ReadTopic(ctx, streamInfo, reader, prc, conflictHandler, updateCb, dlQueue)
 	}
