@@ -131,7 +131,7 @@ func WriteAllProblemTxsUntilNextHb(ctx context.Context, streamInfo StreamInfo, r
 				}
 			}
 		} else if topicData.Resolved != nil {
-			data, err := rd.ParseHBData(ctx, jsonData, types.StreamId{streamInfo.Id, msg.PartitionID()})
+			data, err := rd.ParseHBData(ctx, jsonData, types.ElementaryStreamId{streamInfo.Id, msg.PartitionID()})
 			if err != nil {
 				xlog.Error(ctx, "ParseTxData: Error parsing hb data", zap.Error(err))
 				return
@@ -263,7 +263,7 @@ func ReadTopic(ctx context.Context, streamInfo StreamInfo, reader *client.TopicR
 
 			// Add tx to txQueue
 		} else if topicData.Resolved != nil {
-			data, err := rd.ParseHBData(ctx, jsonData, types.StreamId{streamInfo.Id, msg.PartitionID()})
+			data, err := rd.ParseHBData(ctx, jsonData, types.ElementaryStreamId{streamInfo.Id, msg.PartitionID()})
 			if err != nil {
 				xlog.Error(ctx, "ParseTxData: Error parsing hb data", zap.Error(err))
 				return

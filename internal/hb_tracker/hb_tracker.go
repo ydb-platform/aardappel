@@ -12,7 +12,7 @@ import (
 )
 
 type HeartBeatTracker struct {
-	streams         map[types.StreamId]types.HbData
+	streams         map[types.ElementaryStreamId]types.HbData
 	totalStreamsNum int
 	lastFullHbTime  atomic.Int64
 	lock            sync.Mutex
@@ -28,7 +28,7 @@ func NewHeartBeatTracker(total int) *HeartBeatTracker {
 	}
 
 	var hbt HeartBeatTracker
-	hbt.streams = make(map[types.StreamId]types.HbData)
+	hbt.streams = make(map[types.ElementaryStreamId]types.HbData)
 	hbt.totalStreamsNum = total
 	return &hbt
 }
