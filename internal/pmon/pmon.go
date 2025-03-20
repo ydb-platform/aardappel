@@ -10,6 +10,7 @@ import (
 	"github.com/prometheus/client_golang/prometheus/promhttp"
 	"go.uber.org/zap"
 	"net/http"
+	"sync"
 	"time"
 )
 
@@ -59,10 +60,14 @@ type PromMon struct {
 	heapAllocated        prometheus.Gauge
 	replicationLagEst    prometheus.Gauge
 	perTableCounters     map[string]*MonPerTable
+	lock                 sync.Mutex
 	Stop                 func()
 }
 
 func lazyMetrics(mon *PromMon, tag string) *MonPerTable {
+	mon.lock.Lock()
+	defer mon.lock.Unlock()
+
 	counter, ok := mon.perTableCounters[tag]
 	if ok {
 		return counter

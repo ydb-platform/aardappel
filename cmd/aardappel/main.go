@@ -3,6 +3,7 @@ package main
 import (
 	configInit "aardappel/internal/config"
 	"aardappel/internal/dst_table"
+	"aardappel/internal/hb_tracker"
 	"aardappel/internal/pmon"
 	processor "aardappel/internal/processor"
 	topicReader "aardappel/internal/reader"
@@ -133,8 +134,7 @@ func initReplicaStateTable(ctx context.Context, client *client.TableClient, stat
 
 func doMain(ctx context.Context, config configInit.Config, srcDb *client.TopicClient, dstDb *client.YdbClient,
 	locker *ydb_locker.Locker, mon pmon.Metrics) {
-	var totalPartitions int
-	topicPartsCountMap := make(map[int]int)
+	topicPartsCountMap := make(map[int]hb_tracker.StreamCfg)
 	for i := 0; i < len(config.Streams); i++ {
 		cfgStream := &config.Streams[i]
 
@@ -145,12 +145,13 @@ func doMain(ctx context.Context, config configInit.Config, srcDb *client.TopicCl
 				zap.Error(err))
 		}
 
-		totalPartitions += len(desc.Partitions)
-		topicPartsCountMap[i] = len(desc.Partitions)
+		monTag := misc.TernaryIf(len(cfgStream.MonTag) > 0, cfgStream.MonTag, cfgStream.SrcTopic)
+
+		topicPartsCountMap[i] = hb_tracker.StreamCfg{PartitionsCount: len(desc.Partitions), MonTag: monTag}
 	}
 
 	xlog.Debug(ctx, "All topics described",
-		zap.Int("total parts", totalPartitions))
+		zap.Int("total parts", len(topicPartsCountMap)))
 
 	var conflictHandler processor.ConflictHandler
 
@@ -173,21 +174,24 @@ func doMain(ctx context.Context, config configInit.Config, srcDb *client.TopicCl
 		dlQueue = processor.NewDlQueue(ctx, topicWriter)
 	}
 
-	prc, err := processor.NewProcessor(ctx, totalPartitions, config.StateTable, dstDb.TableClient, config.InstanceId, config.KeyFilter)
+	prc, err := processor.NewProcessor(ctx, topicPartsCountMap, config.StateTable, dstDb.TableClient, config.InstanceId, config.KeyFilter)
 	if err != nil {
 		xlog.Fatal(ctx, "Unable to create processor", zap.Error(err))
 	}
 
 	if config.MaxExpHbInterval != 0 {
 		xlog.Info(ctx, "start heartbeat tracker guard timer", zap.Uint32("timeout in seconds", config.MaxExpHbInterval))
-		prc.StartHbGuard(ctx, config.MaxExpHbInterval)
+		if reflect.ValueOf(mon).IsNil() {
+			prc.StartHbGuard(ctx, config.MaxExpHbInterval, nil)
+		} else {
+			prc.StartHbGuard(ctx, config.MaxExpHbInterval, mon)
+		}
 	}
 
 	var dstTables []*dst_table.DstTable
 
 	for i := 0; i < len(config.Streams); i++ {
 		cfgStream := &config.Streams[i]
-		monTag := misc.TernaryIf(len(cfgStream.MonTag) > 0, cfgStream.MonTag, cfgStream.SrcTopic)
 		startCb, updateCb := topicReader.MakeTopicReaderGuard()
 		reader, err := srcDb.StartReader(config.Streams[i].Consumer, cfgStream.SrcTopic,
 			topicoptions.WithReaderGetPartitionStartOffset(startCb))
@@ -198,7 +202,9 @@ func doMain(ctx context.Context, config configInit.Config, srcDb *client.TopicCl
 				zap.String("src_topic", cfgStream.SrcTopic),
 				zap.Error(err))
 		}
-		dstTables = append(dstTables, dst_table.NewDstTable(dstDb.TableClient, cfgStream.DstTable, monTag))
+		dstTables = append(dstTables,
+			dst_table.NewDstTable(dstDb.TableClient, cfgStream.DstTable, topicPartsCountMap[i].MonTag))
+
 		err = dstTables[i].Init(ctx)
 		if err != nil {
 			xlog.Fatal(ctx, "Unable to init dst table")
@@ -207,7 +213,7 @@ func doMain(ctx context.Context, config configInit.Config, srcDb *client.TopicCl
 		streamInfo := topicReader.StreamInfo{
 			Id:              uint32(i),
 			TopicPath:       cfgStream.SrcTopic,
-			PartCount:       topicPartsCountMap[i],
+			PartCount:       topicPartsCountMap[i].PartitionsCount,
 			ProblemStrategy: cfgStream.ProblemStrategy}
 		xlog.Debug(ctx, "Start reading")
 		go topicReader.ReadTopic(ctx, streamInfo, reader, prc, conflictHandler, updateCb, dlQueue)
