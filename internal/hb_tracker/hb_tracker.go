@@ -64,6 +64,7 @@ func (ht *HeartBeatTracker) guardLoop(ctx context.Context, timeout uint32, metri
 	for ctx.Err() == nil {
 		// give chance to get heartbeat at the start time
 		time.Sleep(time.Duration(timeout) * time.Second)
+		resetMon := false
 		if time.Now().Unix()-ht.lastFullHbTime.Load() > int64(timeout) {
 			// We need to lock to get proper state of tracker
 			ht.lock.Lock()
@@ -92,12 +93,17 @@ func (ht *HeartBeatTracker) guardLoop(ctx context.Context, timeout uint32, metri
 					zap.Int("streams with heartbeat", len(ht.streams)),
 					zap.String("uncompleted streams", missedStr))
 			} else {
-				for i := 0; i < ht.totalStreamsNum; i++ {
-					monTag := ht.streamLayout[i].MonTag
-					metrics.TopicWithoutHB(false, monTag)
-				}
+				resetMon = true
 			}
 			ht.lock.Unlock()
+		} else {
+			resetMon = true
+		}
+		if metrics != nil && resetMon == true {
+			for i := 0; i < ht.totalStreamsNum; i++ {
+				monTag := ht.streamLayout[i].MonTag
+				metrics.TopicWithoutHB(false, monTag)
+			}
 		}
 	}
 }
