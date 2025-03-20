@@ -62,7 +62,7 @@ func ParseTxData(ctx context.Context, jsonData []byte, readerId uint32) (types.T
 	return data, nil
 }
 
-func ParseHBData(ctx context.Context, jsonData []byte, streamId types.StreamId) (types.HbData, error) {
+func ParseHBData(ctx context.Context, jsonData []byte, streamId types.ElementaryStreamId) (types.HbData, error) {
 	var resolvedData TopicResolvedData
 	err := json.Unmarshal(jsonData, &resolvedData)
 	if err != nil {

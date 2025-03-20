@@ -40,14 +40,14 @@ func (data TxData) IsEraseOperation() bool {
 }
 
 // ReaderId + PartitionId for uniq partition id in hb tracker
-type StreamId struct {
+type ElementaryStreamId struct {
 	ReaderId    uint32
 	PartitionId int64
 }
 
 // Hb data
 type HbData struct {
-	StreamId    StreamId
+	StreamId    ElementaryStreamId
 	Step        uint64
 	TxId        uint64
 	CommitTopic func() error
