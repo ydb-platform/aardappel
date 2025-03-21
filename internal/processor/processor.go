@@ -312,9 +312,9 @@ func selectReplicationState(ctx context.Context, client *client.TableClient, sta
 	return ReplicationState{position: types.Position{*step, *txId}, stage: *stage}, err
 }
 
-func NewProcessor(ctx context.Context, total int, stateTablePath string, client *client.TableClient, instanceId string, filter *config.KeyFilter) (*Processor, error) {
+func NewProcessor(ctx context.Context, streamLayout map[int]hb_tracker.StreamCfg, stateTablePath string, client *client.TableClient, instanceId string, filter *config.KeyFilter) (*Processor, error) {
 	var p Processor
-	p.hbTracker = hb_tracker.NewHeartBeatTracker(total)
+	p.hbTracker = hb_tracker.NewHeartBeatTracker(streamLayout)
 	p.txChannel = make(chan func() error, 1000)
 	p.txQueue = tx_queue.NewTxQueue()
 	p.dstServerClient = client
@@ -351,8 +351,8 @@ func NewProcessor(ctx context.Context, total int, stateTablePath string, client 
 	return &p, err
 }
 
-func (processor *Processor) StartHbGuard(ctx context.Context, timeout uint32) {
-	processor.hbTracker.StartHbGuard(ctx, timeout)
+func (processor *Processor) StartHbGuard(ctx context.Context, timeout uint32, metrics hb_tracker.GuardMetrics) {
+	processor.hbTracker.StartHbGuard(ctx, timeout, metrics)
 }
 
 func (processor *Processor) Enqueue(ctx context.Context, fn func() error) {

@@ -6,8 +6,16 @@ import (
 	"testing"
 )
 
+func CreateDummyMap() map[int]hb_tracker.StreamCfg {
+	topicPartsCountMap := make(map[int]hb_tracker.StreamCfg)
+	for i := 0; i < 3; i++ {
+		topicPartsCountMap[i] = hb_tracker.StreamCfg{1, ""}
+	}
+	return topicPartsCountMap
+}
+
 func TestNotAllPart(t *testing.T) {
-	tracker := hb_tracker.NewHeartBeatTracker(3)
+	tracker := hb_tracker.NewHeartBeatTracker(CreateDummyMap())
 	_ = tracker.AddHb(types.HbData{StreamId: types.ElementaryStreamId{ReaderId: 0, PartitionId: 0}, Step: 0})
 
 	_, ready := tracker.GetQuorum()
@@ -17,7 +25,7 @@ func TestNotAllPart(t *testing.T) {
 }
 
 func TestGetLowestHb(t *testing.T) {
-	tracker := hb_tracker.NewHeartBeatTracker(3)
+	tracker := hb_tracker.NewHeartBeatTracker(CreateDummyMap())
 	var c1, c2, c3, c4, c5, c6 bool
 	f1 := func() error { c1 = true; return nil }
 	f2 := func() error { c2 = true; return nil }
