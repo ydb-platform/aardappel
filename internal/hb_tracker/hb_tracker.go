@@ -91,7 +91,7 @@ func (ht *HeartBeatTracker) guardLoop(ctx context.Context, timeout uint32, metri
 					time.Unix(lastSeenHb, 0).Format(time.DateTime),
 					zap.Int("expected streams", ht.totalStreamsNum),
 					zap.Int("streams with heartbeat", len(ht.streams)),
-					zap.String("uncompleted streams", missedStr))
+					zap.String(" streams", missedStr))
 			} else {
 				resetMon = true
 			}
@@ -99,7 +99,7 @@ func (ht *HeartBeatTracker) guardLoop(ctx context.Context, timeout uint32, metri
 		} else {
 			resetMon = true
 		}
-		if metrics != nil && resetMon == true {
+		if metrics && resetMon {
 			for i := 0; i < ht.totalStreamsNum; i++ {
 				monTag := ht.streamLayout[i].MonTag
 				metrics.TopicWithoutHB(false, monTag)
