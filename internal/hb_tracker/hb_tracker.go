@@ -52,7 +52,7 @@ func (ht *HeartBeatTracker) findMissed() []int {
 		partitionsCount := ht.streamLayout[readerId].PartitionsCount
 		for partitionId := 0; partitionId < partitionsCount; partitionId++ {
 			_, ok := ht.streams[types.ElementaryStreamId{ReaderId: uint32(readerId), PartitionId: int64(partitionId)}]
-			if ok == false {
+			if !ok  {
 				missed[readerId]++
 			}
 		}
@@ -91,7 +91,7 @@ func (ht *HeartBeatTracker) guardLoop(ctx context.Context, timeout uint32, metri
 					time.Unix(lastSeenHb, 0).Format(time.DateTime),
 					zap.Int("expected streams", ht.totalStreamsNum),
 					zap.Int("streams with heartbeat", len(ht.streams)),
-					zap.String(" streams", missedStr))
+					zap.String("no heartbeas in streams", missedStr))
 			} else {
 				resetMon = true
 			}
@@ -99,7 +99,7 @@ func (ht *HeartBeatTracker) guardLoop(ctx context.Context, timeout uint32, metri
 		} else {
 			resetMon = true
 		}
-		if metrics && resetMon {
+		if metrics != nil && resetMon {
 			for i := 0; i < ht.totalStreamsNum; i++ {
 				monTag := ht.streamLayout[i].MonTag
 				metrics.TopicWithoutHB(false, monTag)
