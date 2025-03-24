@@ -132,8 +132,7 @@ func initReplicaStateTable(ctx context.Context, client *client.TableClient, stat
 	return err
 }
 
-func doMain(ctx context.Context, config configInit.Config, srcDb *client.TopicClient, dstDb *client.YdbClient,
-	locker *ydb_locker.Locker, mon pmon.Metrics) {
+func doDescribeTopics(ctx context.Context, config configInit.Config, srcDb *client.TopicClient) map[int]hb_tracker.StreamCfg {
 	topicPartsCountMap := make(map[int]hb_tracker.StreamCfg)
 	for i := 0; i < len(config.Streams); i++ {
 		cfgStream := &config.Streams[i]
@@ -149,6 +148,13 @@ func doMain(ctx context.Context, config configInit.Config, srcDb *client.TopicCl
 
 		topicPartsCountMap[i] = hb_tracker.StreamCfg{PartitionsCount: len(desc.Partitions), MonTag: monTag}
 	}
+
+	return topicPartsCountMap
+}
+
+func doMain(ctx context.Context, config configInit.Config, srcDb *client.TopicClient, dstDb *client.YdbClient,
+	locker *ydb_locker.Locker, mon pmon.Metrics) {
+	topicPartsCountMap := doDescribeTopics(ctx, config, srcDb)
 
 	xlog.Debug(ctx, "All topics described",
 		zap.Int("total parts", len(topicPartsCountMap)))
@@ -228,6 +234,20 @@ func doMain(ctx context.Context, config configInit.Config, srcDb *client.TopicCl
 
 	for ctx.Err() == nil {
 		DoReplication(ctx, prc, dstTables, lockExecutor, mon)
+	}
+}
+
+func trySrcConnect(ctx context.Context, config configInit.Config, srcOpts []ydb.Option) bool {
+	srcDb, err := client.NewYdbClient(ctx, config.SrcConnectionString, srcOpts...)
+	if err != nil {
+		xlog.Fatal(ctx, "Unable to connect to src cluster", zap.Error(err))
+	}
+	res := doDescribeTopics(ctx, config, srcDb.TopicClient)
+	if len(res) == len(config.Streams) {
+		xlog.Debug(ctx, "Initial check for YDB src connection passed")
+		return true
+	} else {
+		return false
 	}
 }
 
@@ -317,6 +337,12 @@ func main() {
 	if err != nil {
 		xlog.Fatal(ctx, "Replication startup failed",
 			zap.String("unable to init table", config.StateTable), zap.Error(err))
+	}
+
+	if trySrcConnect(ctx, config, srcOpts) {
+		mon.SetCompleted()
+	} else {
+		xlog.Fatal(ctx, "Unable to connect to SRC cluster before lock stage")
 	}
 
 	hostname, _ := os.Hostname()
