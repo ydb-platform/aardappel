@@ -11,6 +11,7 @@ import (
 	"go.uber.org/zap"
 	"net/http"
 	"sync"
+	"sync/atomic"
 	"time"
 )
 
@@ -23,6 +24,10 @@ type Metrics interface {
 	HeapAllocated(b uint64)
 	ReplicationLagEst(s float32)
 	TopicWithoutHB(noHb bool, tag string)
+}
+
+type HealthApi interface {
+	SetCompleted()
 }
 
 type MonPerTable struct {
@@ -62,6 +67,8 @@ type PromMon struct {
 	perTableCounters     map[string]*MonPerTable
 	lock                 sync.Mutex
 	Stop                 func()
+
+	khz khzHandler
 }
 
 func lazyMetrics(mon *PromMon, tag string) *MonPerTable {
@@ -116,6 +123,22 @@ func NewMetrics(reg *prometheus.Registry) *PromMon {
 	return m
 }
 
+type khzHandler struct {
+	ready atomic.Bool
+}
+
+func (p *PromMon) SetCompleted() {
+	p.khz.ready.Store(true)
+}
+
+func (h *khzHandler) ServeHTTP(writer http.ResponseWriter, req *http.Request) {
+	if h.ready.Load() {
+		writer.WriteHeader(200)
+	} else {
+		writer.WriteHeader(503)
+	}
+}
+
 func NewPromMon(ctx context.Context, config *config.MonServer) *PromMon {
 	reg := prometheus.NewRegistry()
 
@@ -128,6 +151,8 @@ func NewPromMon(ctx context.Context, config *config.MonServer) *PromMon {
 	}
 
 	http.Handle("/metrics", promhttp.HandlerFor(reg, promhttp.HandlerOpts{Registry: reg}))
+
+	http.Handle("/readyz", &p.khz)
 
 	go func() {
 		err := server.ListenAndServe()
