@@ -251,6 +251,17 @@ func trySrcConnect(ctx context.Context, config configInit.Config, srcOpts []ydb.
 	}
 }
 
+func tryDstConnect(ctx context.Context, config configInit.Config, tableClient *client.TableClient) bool {
+	for i := 0; i < len(config.Streams); i++ {
+		cfgStream := &config.Streams[i]
+		_, err := dst_table.DescribeTable(ctx, tableClient, cfgStream.DstTable)
+		if err != nil {
+			return false
+		}
+	}
+	return true
+}
+
 func main() {
 	var confPath string
 
@@ -340,7 +351,11 @@ func main() {
 	}
 
 	if trySrcConnect(ctx, config, srcOpts) {
-		mon.SetCompleted()
+		if tryDstConnect(ctx, config, dstDb.TableClient) {
+			mon.SetCompleted()
+		} else {
+			xlog.Fatal(ctx, "Unable to connect to DST cluster before lock stage")
+		}
 	} else {
 		xlog.Fatal(ctx, "Unable to connect to SRC cluster before lock stage")
 	}

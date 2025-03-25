@@ -46,11 +46,11 @@ func NewDstTable(client *client.TableClient, tablePath string, monTag string) *D
 	return &dstTable
 }
 
-func (dstTable *DstTable) DescribeTable(ctx context.Context) (*options.Description, error) {
+func DescribeTable(ctx context.Context, client *client.TableClient, tablePath string) (*options.Description, error) {
 	var desc options.Description
-	err := dstTable.client.Do(ctx, func(ctx context.Context, s table.Session) error {
+	err := client.Do(ctx, func(ctx context.Context, s table.Session) error {
 		var err error
-		desc, err = s.DescribeTable(ctx, dstTable.tablePath)
+		desc, err = s.DescribeTable(ctx, tablePath)
 		return err
 	}, table.WithIdempotent())
 	if err != nil {
@@ -60,8 +60,12 @@ func (dstTable *DstTable) DescribeTable(ctx context.Context) (*options.Descripti
 	return &desc, nil
 }
 
+func (dstTable *DstTable) describeTable(ctx context.Context) (*options.Description, error) {
+	return DescribeTable(ctx, dstTable.client, dstTable.tablePath)
+}
+
 func (dstTable *DstTable) Init(ctx context.Context) error {
-	desc, err := dstTable.DescribeTable(ctx)
+	desc, err := dstTable.describeTable(ctx)
 	if err != nil {
 		xlog.Error(ctx, "Unable to init dst table", zap.Error(err), zap.String("path", dstTable.tablePath))
 		return fmt.Errorf("Init: %w", err)
