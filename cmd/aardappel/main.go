@@ -132,8 +132,8 @@ func initReplicaStateTable(ctx context.Context, client *client.TableClient, stat
 	return err
 }
 
-func doDescribeTopics(ctx context.Context, config configInit.Config, srcDb *client.TopicClient) map[int]hb_tracker.StreamCfg {
-	topicPartsCountMap := make(map[int]hb_tracker.StreamCfg)
+func doDescribeTopics(ctx context.Context, config configInit.Config, srcDb *client.TopicClient) hb_tracker.TopicPartsCount {
+	topics := hb_tracker.NewTopicPartsCount()
 	for i := 0; i < len(config.Streams); i++ {
 		cfgStream := &config.Streams[i]
 
@@ -146,18 +146,19 @@ func doDescribeTopics(ctx context.Context, config configInit.Config, srcDb *clie
 
 		monTag := misc.TernaryIf(len(cfgStream.MonTag) > 0, cfgStream.MonTag, cfgStream.SrcTopic)
 
-		topicPartsCountMap[i] = hb_tracker.StreamCfg{PartitionsCount: len(desc.Partitions), MonTag: monTag}
+		topics.TopicPartsCountMap[i] = hb_tracker.StreamCfg{PartitionsCount: len(desc.Partitions), MonTag: monTag}
+		topics.TotalPartsCount += len(desc.Partitions)
 	}
 
-	return topicPartsCountMap
+	return *topics
 }
 
 func doMain(ctx context.Context, config configInit.Config, srcDb *client.TopicClient, dstDb *client.YdbClient,
 	locker *ydb_locker.Locker, mon pmon.Metrics) {
-	topicPartsCountMap := doDescribeTopics(ctx, config, srcDb)
+	topics := doDescribeTopics(ctx, config, srcDb)
 
 	xlog.Debug(ctx, "All topics described",
-		zap.Int("total parts", len(topicPartsCountMap)))
+		zap.Int("total parts", topics.TotalPartsCount))
 
 	var conflictHandler processor.ConflictHandler
 
@@ -180,7 +181,7 @@ func doMain(ctx context.Context, config configInit.Config, srcDb *client.TopicCl
 		dlQueue = processor.NewDlQueue(ctx, topicWriter)
 	}
 
-	prc, err := processor.NewProcessor(ctx, topicPartsCountMap, config.StateTable, dstDb.TableClient, config.InstanceId, config.KeyFilter)
+	prc, err := processor.NewProcessor(ctx, topics, config.StateTable, dstDb.TableClient, config.InstanceId, config.KeyFilter)
 	if err != nil {
 		xlog.Fatal(ctx, "Unable to create processor", zap.Error(err))
 	}
@@ -209,7 +210,7 @@ func doMain(ctx context.Context, config configInit.Config, srcDb *client.TopicCl
 				zap.Error(err))
 		}
 		dstTables = append(dstTables,
-			dst_table.NewDstTable(dstDb.TableClient, cfgStream.DstTable, topicPartsCountMap[i].MonTag))
+			dst_table.NewDstTable(dstDb.TableClient, cfgStream.DstTable, topics.TopicPartsCountMap[i].MonTag))
 
 		err = dstTables[i].Init(ctx)
 		if err != nil {
@@ -219,7 +220,7 @@ func doMain(ctx context.Context, config configInit.Config, srcDb *client.TopicCl
 		streamInfo := topicReader.StreamInfo{
 			Id:              uint32(i),
 			TopicPath:       cfgStream.SrcTopic,
-			PartCount:       topicPartsCountMap[i].PartitionsCount,
+			PartCount:       topics.TopicPartsCountMap[i].PartitionsCount,
 			ProblemStrategy: cfgStream.ProblemStrategy}
 		xlog.Debug(ctx, "Start reading")
 		go topicReader.ReadTopic(ctx, streamInfo, reader, prc, conflictHandler, updateCb, dlQueue)
@@ -243,7 +244,7 @@ func trySrcConnect(ctx context.Context, config configInit.Config, srcOpts []ydb.
 		xlog.Fatal(ctx, "Unable to connect to src cluster", zap.Error(err))
 	}
 	res := doDescribeTopics(ctx, config, srcDb.TopicClient)
-	if len(res) == len(config.Streams) {
+	if len(res.TopicPartsCountMap) == len(config.Streams) {
 		xlog.Debug(ctx, "Initial check for YDB src connection passed")
 		return true
 	} else {
