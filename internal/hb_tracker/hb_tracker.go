@@ -25,6 +25,18 @@ type StreamCfg struct {
 	MonTag          string
 }
 
+type TopicPartsCount struct {
+	TopicPartsCountMap map[int]StreamCfg
+	TotalPartsCount    int
+}
+
+func NewTopicPartsCount() *TopicPartsCount {
+	var topics TopicPartsCount
+	topics.TopicPartsCountMap = make(map[int]StreamCfg)
+	topics.TotalPartsCount = 0
+	return &topics
+}
+
 type GuardMetrics interface {
 	TopicWithoutHB(noHb bool, tag string)
 }
@@ -33,8 +45,8 @@ type Feeder interface {
 	AddHb(data types.HbData) error
 }
 
-func NewHeartBeatTracker(streamLayout map[int]StreamCfg) *HeartBeatTracker {
-	total := len(streamLayout)
+func NewHeartBeatTracker(streamLayout TopicPartsCount) *HeartBeatTracker {
+	total := streamLayout.TotalPartsCount
 	if total == 0 {
 		return nil
 	}
@@ -42,7 +54,7 @@ func NewHeartBeatTracker(streamLayout map[int]StreamCfg) *HeartBeatTracker {
 	var hbt HeartBeatTracker
 	hbt.streams = make(map[types.ElementaryStreamId]types.HbData)
 	hbt.totalStreamsNum = total
-	hbt.streamLayout = streamLayout
+	hbt.streamLayout = streamLayout.TopicPartsCountMap
 	return &hbt
 }
 
@@ -52,7 +64,7 @@ func (ht *HeartBeatTracker) findMissed() []int {
 		partitionsCount := ht.streamLayout[readerId].PartitionsCount
 		for partitionId := 0; partitionId < partitionsCount; partitionId++ {
 			_, ok := ht.streams[types.ElementaryStreamId{ReaderId: uint32(readerId), PartitionId: int64(partitionId)}]
-			if !ok  {
+			if !ok {
 				missed[readerId]++
 			}
 		}
