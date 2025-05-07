@@ -353,7 +353,9 @@ func main() {
 
 	if trySrcConnect(ctx, config, srcOpts) {
 		if tryDstConnect(ctx, config, dstDb.TableClient) {
-			mon.SetCompleted()
+			if mon != nil {
+				mon.SetCompleted()
+			}
 		} else {
 			xlog.Fatal(ctx, "Unable to connect to DST cluster before lock stage")
 		}
