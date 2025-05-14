@@ -63,7 +63,7 @@ func GetLockerRequestBuilder(tableName string) *ydb_locker.LockRequestBuilderImp
 
 func EstimateReplicationLagSec(pos types.Position) float32 {
 	ts := time.Now().UTC()
-	return float32(uint64(ts.UnixMilli())-pos.Step) / 1000.0
+	return float32(max(uint64(ts.UnixMilli()), pos.Step)-pos.Step) / 1000.0
 }
 
 func DoReplication(ctx context.Context, prc *processor.Processor, dstTables []*dst_table.DstTable,
