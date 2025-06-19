@@ -381,8 +381,8 @@ func GenQueryByTxsType(ctx context.Context, tableMetaInfo TableMetaInfo, txData 
 		return QueryStatement{}, nil
 	}
 
-	upsertResult := make(map[string]UpdatingData)
-	deleteResult := make(map[string]UpdatingData)
+	upsertResult := make(map[string]*UpdatingData)
+	deleteResult := make(map[string]*UpdatingData)
 
 	serializeKey := func(key []json.RawMessage) (string, error) {
 		data, err := json.Marshal(key)
@@ -407,7 +407,7 @@ func GenQueryByTxsType(ctx context.Context, tableMetaInfo TableMetaInfo, txData 
 			if data, upsertExist := upsertResult[txKey]; upsertExist {
 				data.UpdateColumns(txData[i], txKey)
 			} else {
-				upsertResult[txKey] = *NewUpdatingData(txData[i], txKey)
+				upsertResult[txKey] = NewUpdatingData(txData[i], txKey)
 			}
 			continue
 		}
@@ -419,7 +419,7 @@ func GenQueryByTxsType(ctx context.Context, tableMetaInfo TableMetaInfo, txData 
 			if data, deleteExist := deleteResult[txKey]; deleteExist {
 				data.UpdateColumns(txData[i], txKey)
 			} else {
-				deleteResult[txKey] = *NewUpdatingData(txData[i], txKey)
+				deleteResult[txKey] = NewUpdatingData(txData[i], txKey)
 			}
 			continue
 		}
@@ -429,10 +429,10 @@ func GenQueryByTxsType(ctx context.Context, tableMetaInfo TableMetaInfo, txData 
 	upsertResultList := make([]UpdatingData, 0, len(upsertResult))
 	deleteResultList := make([]UpdatingData, 0, len(deleteResult))
 	for _, data := range upsertResult {
-		upsertResultList = append(upsertResultList, data)
+		upsertResultList = append(upsertResultList, *data)
 	}
 	for _, data := range deleteResult {
-		deleteResultList = append(deleteResultList, data)
+		deleteResultList = append(deleteResultList, *data)
 	}
 	sort.Sort(ByColumns(upsertResultList))
 	sort.Sort(ByKeys(deleteResultList))
