@@ -148,6 +148,29 @@ func TestGenOnlyUpsertQuery(t *testing.T) {
 	assert.Equal(t, expectedParams, query.Parameters.String())
 }
 
+func TestCheckUpdatingDataWithTheSamePrimaryKey(t *testing.T) {
+	ctx := context.Background()
+	txData1, _ := reader.ParseTxData(ctx, []byte("{\"update\":{\"value1\":\"MTU=\", \"value3\":1.00000009},\"key\":[15,\"MTU=\"],\"ts\":[18446744073709551615,18446744073709551615]}"), 0)
+	txData2, _ := reader.ParseTxData(ctx, []byte("{\"update\":{\"value1\":\"MTY=\", \"value3\":1.00000009},\"key\":[16,\"MTY=\"],\"ts\":[18446744073709551614,18446744073709551614]}"), 0)
+	txData3, _ := reader.ParseTxData(ctx, []byte("{\"update\":{\"value1\":\"MTc=\", \"value2\":18446744073709551615, \"value3\":1.00000009},\"key\":[15,\"MTU=\"],\"ts\":[18446744073709551614,18446744073709551614]}"), 0)
+	query, err := GenQuery(ctx, GetTestTableMetaInfo(), []types.TxData{txData1, txData2, txData3}, 0)
+	require.Nil(t, err)
+	expectedResult := "UPSERT INTO `path` (`key1`, `key2`, `value1`, `value2`, `value3`) SELECT `key1`, `key2`, `value1`, `value2`, `value3` FROM AS_TABLE($p_0_0);\n" +
+		"UPSERT INTO `path` (`key1`, `key2`, `value1`, `value3`) SELECT `key1`, `key2`, `value1`, `value3` FROM AS_TABLE($p_0_1);\n"
+	assert.Equal(t, expectedResult, query.Query)
+	expectedParams := "{" +
+		"\"$p_0_0\":" +
+		"[" +
+		"<|`key1`:15,`key2`:\"15\",`value1`:\"17\",`value2`:18446744073709551615ul,`value3`:Just(Double(\"1.00000009\"))|>" +
+		"]," +
+		"\"$p_0_1\":" +
+		"[" +
+		"<|`key1`:16,`key2`:\"16\",`value1`:\"16\",`value3`:Just(Double(\"1.00000009\"))|>" +
+		"]" +
+		"}"
+	assert.Equal(t, expectedParams, query.Parameters.String())
+}
+
 func TestGenOnlyEraseQuery(t *testing.T) {
 	ctx := context.Background()
 	txData1, _ := reader.ParseTxData(ctx, []byte("{\"erase\":{},\"key\":[16,\"MTY=\"],\"ts\":[18446744073709551615,18446744073709551615]}"), 0)
