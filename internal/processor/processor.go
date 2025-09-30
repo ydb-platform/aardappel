@@ -13,16 +13,17 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
+	"sync"
+	"sync/atomic"
+	"time"
+
 	"github.com/ydb-platform/ydb-go-sdk/v3/table"
 	"github.com/ydb-platform/ydb-go-sdk/v3/table/options"
 	"github.com/ydb-platform/ydb-go-sdk/v3/table/result/named"
 	ydbTypes "github.com/ydb-platform/ydb-go-sdk/v3/table/types"
 	"github.com/ydb-platform/ydb-go-sdk/v3/topic/topicreader"
 	"go.uber.org/zap"
-	"io"
-	"sync"
-	"sync/atomic"
-	"time"
 )
 
 const REPLICATION_OK = "OK"

@@ -3,16 +3,18 @@ package reader
 import (
 	"aardappel/internal/processor"
 	"aardappel/internal/types"
+	"aardappel/internal/util/errors"
 	rd "aardappel/internal/util/reader"
 	"aardappel/internal/util/xlog"
 	client "aardappel/internal/util/ydb"
 	"context"
 	"encoding/json"
 	"fmt"
-	"github.com/ydb-platform/ydb-go-sdk/v3/topic/topicoptions"
-	"go.uber.org/zap"
 	"io"
 	"sync"
+
+	"github.com/ydb-platform/ydb-go-sdk/v3/topic/topicoptions"
+	"go.uber.org/zap"
 )
 
 type StreamInfo struct {
@@ -57,7 +59,7 @@ func MakeTopicReaderGuard() (topicoptions.GetPartitionStartOffsetFunc, UpdateOff
 		var resp topicoptions.GetPartitionStartOffsetResponse
 		offset, ok := guard.lastPosition[req.PartitionID]
 
-		if ok == true {
+		if ok {
 			xlog.Info(ctx, "Start partition reading from offset",
 				zap.String("topic", req.Topic),
 				zap.Int64("PartitionID", req.PartitionID),
@@ -145,7 +147,7 @@ func WriteAllProblemTxsUntilNextHb(ctx context.Context, streamInfo StreamInfo, r
 }
 
 func ReadTopic(ctx context.Context, streamInfo StreamInfo, reader *client.TopicReader, channel processor.Channel,
-	handler processor.ConflictHandler, updateOffsetCb UpdateOffsetFunc, dlQueue *processor.DLQueue) {
+	handler processor.ConflictHandler, updateOffsetCb UpdateOffsetFunc, dlQueue *processor.DLQueue) error {
 	var mu sync.Mutex
 	lastHb := make(map[int64]types.Position)
 	// returns true - pass item, false - skip item
@@ -217,11 +219,12 @@ func ReadTopic(ctx context.Context, streamInfo StreamInfo, reader *client.TopicR
 		msg, err := reader.ReadMessage(ctx)
 		if err != nil {
 			if ctx.Err() != nil {
-				xlog.Error(ctx, "Unable to read message", zap.Error(err))
+				xlog.Fatal(ctx, "Unable to read message", zap.Error(err))
 			} else {
-				xlog.Fatal(ctx, "Unable to read message, fatal error ctx is not cancelled", zap.Error(err))
+				xlog.Error(ctx, "Unable to read message, fatal error ctx is not cancelled", zap.Error(err))
+				return errors.NewYDBConnectionError("reading topic message", err)
 			}
-			return
+			return err
 		}
 
 		updateOffsetCb(msg.Offset, msg.PartitionID())
@@ -229,29 +232,35 @@ func ReadTopic(ctx context.Context, streamInfo StreamInfo, reader *client.TopicR
 		jsonData, err := io.ReadAll(msg)
 		if err != nil {
 			xlog.Error(ctx, "Unable to read all", zap.Error(err))
-			return
+			return nil
 		}
 
 		var topicData TopicData
 		err = json.Unmarshal(jsonData, &topicData)
 		if err != nil {
 			xlog.Error(ctx, "Error parsing topic data", zap.Error(err))
-			return
+			return nil
 		}
 		if topicData.Update != nil || topicData.Erase != nil {
 			data, err := rd.ParseTxData(ctx, jsonData, streamInfo.Id)
 			if err != nil {
 				xlog.Error(ctx, "ParseTxData: Error parsing tx data", zap.Error(err))
-				return
+				return err
 			}
 			rv := verifyStream(msg.PartitionID(), data)
 			data.CommitTopic = func() error {
 				mu.Lock()
 				ret := reader.Commit(msg.Context(), msg)
 				mu.Unlock()
+				if ctx.Err() != nil {
+					xlog.Fatal(ctx, "Unable to commit message", zap.Error(err))
+				} else {
+					xlog.Error(ctx, "Unable to commit message, fatal error ctx is not cancelled", zap.Error(err))
+					return errors.NewYDBConnectionError("reading topic message", err)
+				}
 				return ret
 			}
-			if rv == true {
+			if rv {
 				channel.EnqueueTx(ctx, data)
 			} else {
 				err := data.CommitTopic()
@@ -266,20 +275,28 @@ func ReadTopic(ctx context.Context, streamInfo StreamInfo, reader *client.TopicR
 			data, err := rd.ParseHBData(ctx, jsonData, types.ElementaryStreamId{streamInfo.Id, msg.PartitionID()})
 			if err != nil {
 				xlog.Error(ctx, "ParseTxData: Error parsing hb data", zap.Error(err))
-				return
+				return err
 			}
 			lastHb[msg.PartitionID()] = *types.NewPosition(data)
 			data.CommitTopic = func() error {
 				mu.Lock()
 				ret := reader.Commit(msg.Context(), msg)
 				mu.Unlock()
+				if ctx.Err() != nil {
+					xlog.Fatal(ctx, "Unable to commit message", zap.Error(err))
+				} else {
+					xlog.Error(ctx, "Unable to commit message, fatal error ctx is not cancelled", zap.Error(err))
+					return errors.NewYDBConnectionError("reading topic message", err)
+				}
 				return ret
 			}
 			channel.EnqueueHb(ctx, data)
 			// Update last hb for partition
 		} else {
 			xlog.Error(ctx, "Unknown format of topic message")
-			return
+			return fmt.Errorf("Unknown format of topic message")
 		}
 	}
+
+	return nil
 }

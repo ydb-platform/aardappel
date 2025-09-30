@@ -8,6 +8,7 @@ import (
 	processor "aardappel/internal/processor"
 	topicReader "aardappel/internal/reader"
 	"aardappel/internal/types"
+	aardappelErrors "aardappel/internal/util/errors"
 	"aardappel/internal/util/misc"
 	"aardappel/internal/util/xlog"
 	client "aardappel/internal/util/ydb"
@@ -15,6 +16,14 @@ import (
 	"errors"
 	"flag"
 	"fmt"
+	"log"
+	"os"
+	"os/signal"
+	"reflect"
+	"runtime"
+	"syscall"
+	"time"
+
 	"github.com/google/uuid"
 	"github.com/robdrynkin/ydb_locker/pkg/ydb_locker"
 	"github.com/ydb-platform/ydb-go-genproto/protos/Ydb"
@@ -24,13 +33,6 @@ import (
 	ydbTypes "github.com/ydb-platform/ydb-go-sdk/v3/table/types"
 	"github.com/ydb-platform/ydb-go-sdk/v3/topic/topicoptions"
 	"go.uber.org/zap"
-	"log"
-	"os"
-	"os/signal"
-	"reflect"
-	"runtime"
-	"syscall"
-	"time"
 )
 
 func createYdbDriverAuthOptions(oauthFile string, staticToken string) ([]ydb.Option, error) {
@@ -155,6 +157,7 @@ func doDescribeTopics(ctx context.Context, config configInit.Config, srcDb *clie
 
 func doMain(ctx context.Context, config configInit.Config, srcDb *client.TopicClient, dstDb *client.YdbClient,
 	locker *ydb_locker.Locker, mon pmon.Metrics) {
+	ydbErrorChan := make(chan error, len(config.Streams))
 	topics := doDescribeTopics(ctx, config, srcDb)
 
 	xlog.Debug(ctx, "All topics described",
@@ -223,7 +226,21 @@ func doMain(ctx context.Context, config configInit.Config, srcDb *client.TopicCl
 			PartCount:       topics.TopicPartsCountMap[i].PartitionsCount,
 			ProblemStrategy: cfgStream.ProblemStrategy}
 		xlog.Debug(ctx, "Start reading")
-		go topicReader.ReadTopic(ctx, streamInfo, reader, prc, conflictHandler, updateCb, dlQueue)
+		go func(streamInfo topicReader.StreamInfo, reader *client.TopicReader, prc *processor.Processor, conflictHandler processor.ConflictHandler, updateCb topicReader.UpdateOffsetFunc, dlQueue *processor.DLQueue) {
+			err := topicReader.ReadTopic(ctx, streamInfo, reader, prc, conflictHandler, updateCb, dlQueue)
+			if err != nil {
+				if aardappelErrors.IsYDBConnectionError(err) {
+					xlog.Error(ctx, "YDB connection error in ReadTopic", zap.Error(err))
+					select {
+					case ydbErrorChan <- err:
+					default:
+					}
+					return
+				} else {
+					xlog.Fatal(ctx, "Fatal error in ReadTopic", zap.Error(err))
+				}
+			}
+		}(streamInfo, reader, prc, conflictHandler, updateCb, dlQueue)
 	}
 
 	lockExecutor := func(fn func(context.Context, table.Session, table.Transaction) error) error {
@@ -234,6 +251,13 @@ func doMain(ctx context.Context, config configInit.Config, srcDb *client.TopicCl
 	}
 
 	for ctx.Err() == nil {
+		select {
+		case ydbErr := <-ydbErrorChan:
+			xlog.Error(ctx, "Received YDB connection error from reader, terminating to release lock", zap.Error(ydbErr))
+			return
+		default:
+		}
+
 		DoReplication(ctx, prc, dstTables, lockExecutor, mon)
 	}
 }

@@ -7,13 +7,14 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"fmt"
+	"sort"
+	"strings"
+	"time"
+
 	"github.com/google/uuid"
 	"github.com/ydb-platform/ydb-go-sdk/v3/table"
 	ydb_types "github.com/ydb-platform/ydb-go-sdk/v3/table/types"
 	"go.uber.org/zap"
-	"sort"
-	"strings"
-	"time"
 )
 
 type UpdatingData struct {
