@@ -3,12 +3,13 @@ package reader
 import (
 	"aardappel/internal/processor"
 	"aardappel/internal/types"
-	"aardappel/internal/util/errors"
+	aardappelErrors "aardappel/internal/util/errors"
 	rd "aardappel/internal/util/reader"
 	"aardappel/internal/util/xlog"
 	client "aardappel/internal/util/ydb"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"sync"
@@ -218,11 +219,11 @@ func ReadTopic(ctx context.Context, streamInfo StreamInfo, reader *client.TopicR
 	for ctx.Err() == nil {
 		msg, err := reader.ReadMessage(ctx)
 		if err != nil {
-			if ctx.Err() != nil {
-				xlog.Fatal(ctx, "Unable to read message", zap.Error(err))
+			if errors.Is(err, context.Canceled) {
+				xlog.Error(ctx, "Unable to read message", zap.Error(err))
+				return aardappelErrors.NewYDBConnectionError("reading topic message", err)
 			} else {
-				xlog.Error(ctx, "Unable to read message, fatal error ctx is not cancelled", zap.Error(err))
-				return errors.NewYDBConnectionError("reading topic message", err)
+				xlog.Fatal(ctx, "Unable to read message", zap.Error(err))
 			}
 			return err
 		}
@@ -252,11 +253,9 @@ func ReadTopic(ctx context.Context, streamInfo StreamInfo, reader *client.TopicR
 				mu.Lock()
 				ret := reader.Commit(msg.Context(), msg)
 				mu.Unlock()
-				if ctx.Err() != nil {
-					xlog.Fatal(ctx, "Unable to commit message", zap.Error(err))
-				} else {
-					xlog.Error(ctx, "Unable to commit message, fatal error ctx is not cancelled", zap.Error(err))
-					return errors.NewYDBConnectionError("reading topic message", err)
+				if msg.Context().Err() != nil {
+					xlog.Error(ctx, "Unable to commit message", zap.Error(err))
+					return aardappelErrors.NewYDBConnectionError("committing topic message", err)
 				}
 				return ret
 			}
@@ -282,11 +281,9 @@ func ReadTopic(ctx context.Context, streamInfo StreamInfo, reader *client.TopicR
 				mu.Lock()
 				ret := reader.Commit(msg.Context(), msg)
 				mu.Unlock()
-				if ctx.Err() != nil {
-					xlog.Fatal(ctx, "Unable to commit message", zap.Error(err))
-				} else {
-					xlog.Error(ctx, "Unable to commit message, fatal error ctx is not cancelled", zap.Error(err))
-					return errors.NewYDBConnectionError("reading topic message", err)
+				if msg.Context().Err() != nil {
+					xlog.Error(ctx, "Unable to commit message", zap.Error(err))
+					return aardappelErrors.NewYDBConnectionError("committing topic message", err)
 				}
 				return ret
 			}

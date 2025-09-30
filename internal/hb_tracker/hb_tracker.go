@@ -5,11 +5,12 @@ import (
 	"aardappel/internal/util/misc"
 	"aardappel/internal/util/xlog"
 	"fmt"
-	"go.uber.org/zap"
-	"golang.org/x/net/context"
 	"sync"
 	"sync/atomic"
 	"time"
+
+	"go.uber.org/zap"
+	"golang.org/x/net/context"
 )
 
 type HeartBeatTracker struct {
@@ -133,7 +134,7 @@ func (ht *HeartBeatTracker) AddHb(data types.HbData) error {
 			// Got new heartbeat for stream - we can commit previous one
 			err := hb.CommitTopic()
 			if err != nil {
-				return fmt.Errorf("unable to commit topic during update HB %w, stepId: %d, txId: %d", err,
+				return fmt.Errorf("unable to commit topic during update HB: %w, stepId: %d, txId: %d", err,
 					hb.Step, hb.TxId)
 			}
 			hb = data

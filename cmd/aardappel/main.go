@@ -156,8 +156,7 @@ func doDescribeTopics(ctx context.Context, config configInit.Config, srcDb *clie
 }
 
 func doMain(ctx context.Context, config configInit.Config, srcDb *client.TopicClient, dstDb *client.YdbClient,
-	locker *ydb_locker.Locker, mon pmon.Metrics) {
-	ydbErrorChan := make(chan error, len(config.Streams))
+	locker *ydb_locker.Locker, mon pmon.Metrics, ydbErrorChan chan error) {
 	topics := doDescribeTopics(ctx, config, srcDb)
 
 	xlog.Debug(ctx, "All topics described",
@@ -231,10 +230,7 @@ func doMain(ctx context.Context, config configInit.Config, srcDb *client.TopicCl
 			if err != nil {
 				if aardappelErrors.IsYDBConnectionError(err) {
 					xlog.Error(ctx, "YDB connection error in ReadTopic", zap.Error(err))
-					select {
-					case ydbErrorChan <- err:
-					default:
-					}
+					ydbErrorChan <- err
 					return
 				} else {
 					xlog.Fatal(ctx, "Fatal error in ReadTopic", zap.Error(err))
@@ -251,13 +247,6 @@ func doMain(ctx context.Context, config configInit.Config, srcDb *client.TopicCl
 	}
 
 	for ctx.Err() == nil {
-		select {
-		case ydbErr := <-ydbErrorChan:
-			xlog.Error(ctx, "Received YDB connection error from reader, terminating to release lock", zap.Error(ydbErr))
-			return
-		default:
-		}
-
 		DoReplication(ctx, prc, dstTables, lockExecutor, mon)
 	}
 }
@@ -303,6 +292,8 @@ func main() {
 		signal.Stop(signalChannel)
 		cancel()
 	}()
+
+	ydbErrorChannel := make(chan error)
 
 	// Setup config
 	config, err := configInit.InitConfig(ctx, confPath)
@@ -402,6 +393,10 @@ func main() {
 	var lockErrCnt uint32
 	for cont {
 		select {
+		case ydbErr := <-ydbErrorChannel:
+			xlog.Error(ctx, "Got ydb error", zap.Error(ydbErr))
+			cont = false
+			continue
 		case lockCtx, ok := <-lockChannel:
 			// Connect to YDB
 			if ok != true {
@@ -414,7 +409,7 @@ func main() {
 				xlog.Fatal(ctx, "Unable to connect to src cluster", zap.Error(err))
 			}
 			xlog.Debug(ctx, "YDB src opened")
-			doMain(lockCtx, config, srcDb.TopicClient, dstDb, locker, mon)
+			doMain(lockCtx, config, srcDb.TopicClient, dstDb, locker, mon, ydbErrorChannel)
 		case <-time.After(5 * time.Second):
 			if lockErrCnt == 10 {
 				cont = false
