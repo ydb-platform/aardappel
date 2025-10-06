@@ -9,7 +9,6 @@ import (
 	client "aardappel/internal/util/ydb"
 	"context"
 	"encoding/json"
-	"errors"
 	"fmt"
 	"io"
 	"sync"
@@ -148,7 +147,7 @@ func WriteAllProblemTxsUntilNextHb(ctx context.Context, streamInfo StreamInfo, r
 }
 
 func ReadTopic(ctx context.Context, streamInfo StreamInfo, reader *client.TopicReader, channel processor.Channel,
-	handler processor.ConflictHandler, updateOffsetCb UpdateOffsetFunc, dlQueue *processor.DLQueue) error {
+	handler processor.ConflictHandler, updateOffsetCb UpdateOffsetFunc, dlQueue *processor.DLQueue, ydbErrorChan chan error) error {
 	var mu sync.Mutex
 	lastHb := make(map[int64]types.Position)
 	// returns true - pass item, false - skip item
@@ -217,18 +216,23 @@ func ReadTopic(ctx context.Context, streamInfo StreamInfo, reader *client.TopicR
 	}()
 
 	for ctx.Err() == nil {
+		xlog.Error(ctx, "Read itteration")
 		msg, err := reader.ReadMessage(ctx)
+		xlog.Error(ctx, "Read message")
 		if err != nil {
-			if errors.Is(err, context.Canceled) {
-				xlog.Error(ctx, "Unable to read message", zap.Error(err))
-				return aardappelErrors.NewYDBConnectionError("reading topic message", err)
-			} else {
-				xlog.Fatal(ctx, "Unable to read message", zap.Error(err))
-			}
+			xlog.Fatal(ctx, "Unable to read message", zap.Error(err))
 			return err
 		}
 
+		if msg.Context().Err() != nil {
+			xlog.Error(ctx, "Unable to commit message", zap.Error(err))
+			ydbErrorChan <- msg.Context().Err()
+			return aardappelErrors.NewYDBConnectionError("committing topic message", err)
+		}
+
+		xlog.Error(ctx, "Start updateOffsetCb")
 		updateOffsetCb(msg.Offset, msg.PartitionID())
+		xlog.Error(ctx, "Finish updateOffsetCb")
 
 		jsonData, err := io.ReadAll(msg)
 		if err != nil {
@@ -243,24 +247,30 @@ func ReadTopic(ctx context.Context, streamInfo StreamInfo, reader *client.TopicR
 			return nil
 		}
 		if topicData.Update != nil || topicData.Erase != nil {
+			xlog.Error(ctx, "Update message")
 			data, err := rd.ParseTxData(ctx, jsonData, streamInfo.Id)
 			if err != nil {
 				xlog.Error(ctx, "ParseTxData: Error parsing tx data", zap.Error(err))
 				return err
 			}
+			xlog.Error(ctx, "Start verifyStream")
 			rv := verifyStream(msg.PartitionID(), data)
+			xlog.Error(ctx, "Finish verifyStream")
 			data.CommitTopic = func() error {
 				mu.Lock()
 				ret := reader.Commit(msg.Context(), msg)
 				mu.Unlock()
 				if msg.Context().Err() != nil {
 					xlog.Error(ctx, "Unable to commit message", zap.Error(err))
+					ydbErrorChan <- msg.Context().Err()
 					return aardappelErrors.NewYDBConnectionError("committing topic message", err)
 				}
 				return ret
 			}
 			if rv {
+				xlog.Error(ctx, "Start EnqueueTx")
 				channel.EnqueueTx(ctx, data)
+				xlog.Error(ctx, "Finish EnqueueTx")
 			} else {
 				err := data.CommitTopic()
 				if err != nil {
@@ -271,6 +281,7 @@ func ReadTopic(ctx context.Context, streamInfo StreamInfo, reader *client.TopicR
 
 			// Add tx to txQueue
 		} else if topicData.Resolved != nil {
+			xlog.Error(ctx, "Resolved message")
 			data, err := rd.ParseHBData(ctx, jsonData, types.ElementaryStreamId{streamInfo.Id, msg.PartitionID()})
 			if err != nil {
 				xlog.Error(ctx, "ParseTxData: Error parsing hb data", zap.Error(err))
@@ -283,11 +294,14 @@ func ReadTopic(ctx context.Context, streamInfo StreamInfo, reader *client.TopicR
 				mu.Unlock()
 				if msg.Context().Err() != nil {
 					xlog.Error(ctx, "Unable to commit message", zap.Error(err))
+					ydbErrorChan <- msg.Context().Err()
 					return aardappelErrors.NewYDBConnectionError("committing topic message", err)
 				}
 				return ret
 			}
+			xlog.Error(ctx, "Start EnqueueTx")
 			channel.EnqueueHb(ctx, data)
+			xlog.Error(ctx, "Finish EnqueueTx")
 			// Update last hb for partition
 		} else {
 			xlog.Error(ctx, "Unknown format of topic message")

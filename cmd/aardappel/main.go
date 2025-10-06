@@ -226,11 +226,10 @@ func doMain(ctx context.Context, config configInit.Config, srcDb *client.TopicCl
 			ProblemStrategy: cfgStream.ProblemStrategy}
 		xlog.Debug(ctx, "Start reading")
 		go func(streamInfo topicReader.StreamInfo, reader *client.TopicReader, prc *processor.Processor, conflictHandler processor.ConflictHandler, updateCb topicReader.UpdateOffsetFunc, dlQueue *processor.DLQueue) {
-			err := topicReader.ReadTopic(ctx, streamInfo, reader, prc, conflictHandler, updateCb, dlQueue)
+			err := topicReader.ReadTopic(ctx, streamInfo, reader, prc, conflictHandler, updateCb, dlQueue, ydbErrorChan)
 			if err != nil {
 				if aardappelErrors.IsYDBConnectionError(err) {
 					xlog.Error(ctx, "YDB connection error in ReadTopic", zap.Error(err))
-					ydbErrorChan <- err
 					return
 				} else {
 					xlog.Fatal(ctx, "Fatal error in ReadTopic", zap.Error(err))
@@ -389,6 +388,7 @@ func main() {
 
 	lockChannel := locker.LockerContext(ctx)
 	var cont bool
+	var run bool = false
 	cont = true
 	var lockErrCnt uint32
 	for cont {
@@ -396,6 +396,7 @@ func main() {
 		case ydbErr := <-ydbErrorChannel:
 			xlog.Error(ctx, "Got ydb error", zap.Error(ydbErr))
 			cont = false
+			cancel()
 			continue
 		case lockCtx, ok := <-lockChannel:
 			// Connect to YDB
@@ -409,8 +410,12 @@ func main() {
 				xlog.Fatal(ctx, "Unable to connect to src cluster", zap.Error(err))
 			}
 			xlog.Debug(ctx, "YDB src opened")
-			doMain(lockCtx, config, srcDb.TopicClient, dstDb, locker, mon, ydbErrorChannel)
+			go doMain(lockCtx, config, srcDb.TopicClient, dstDb, locker, mon, ydbErrorChannel)
+			run = true
 		case <-time.After(5 * time.Second):
+			if run == true {
+				continue
+			}
 			if lockErrCnt == 10 {
 				cont = false
 				continue
