@@ -2,8 +2,9 @@ package xlog
 
 import (
 	"context"
-	"go.uber.org/zap"
 	"sync/atomic"
+
+	"go.uber.org/zap"
 )
 
 var internalLogger atomic.Value

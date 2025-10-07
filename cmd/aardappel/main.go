@@ -156,7 +156,7 @@ func doDescribeTopics(ctx context.Context, config configInit.Config, srcDb *clie
 }
 
 func doMain(ctx context.Context, config configInit.Config, srcDb *client.TopicClient, dstDb *client.YdbClient,
-	locker *ydb_locker.Locker, mon pmon.Metrics, ydbErrorChan chan error) {
+	locker *ydb_locker.Locker, mon pmon.Metrics, errorChan chan error) {
 	topics := doDescribeTopics(ctx, config, srcDb)
 
 	xlog.Debug(ctx, "All topics described",
@@ -226,7 +226,7 @@ func doMain(ctx context.Context, config configInit.Config, srcDb *client.TopicCl
 			ProblemStrategy: cfgStream.ProblemStrategy}
 		xlog.Debug(ctx, "Start reading")
 		go func(streamInfo topicReader.StreamInfo, reader *client.TopicReader, prc *processor.Processor, conflictHandler processor.ConflictHandler, updateCb topicReader.UpdateOffsetFunc, dlQueue *processor.DLQueue) {
-			err := topicReader.ReadTopic(ctx, streamInfo, reader, prc, conflictHandler, updateCb, dlQueue, ydbErrorChan)
+			err := topicReader.ReadTopic(ctx, streamInfo, reader, prc, conflictHandler, updateCb, dlQueue, errorChan)
 			if err != nil {
 				if aardappelErrors.IsYDBConnectionError(err) {
 					xlog.Error(ctx, "YDB connection error in ReadTopic", zap.Error(err))
@@ -292,7 +292,7 @@ func main() {
 		cancel()
 	}()
 
-	ydbErrorChannel := make(chan error)
+	errorChannel := make(chan error)
 
 	// Setup config
 	config, err := configInit.InitConfig(ctx, confPath)
@@ -303,14 +303,6 @@ func main() {
 	// Setup logging
 	logger := xlog.SetupLogging(config.LogLevel)
 	xlog.SetInternalLogger(logger)
-
-	go func() {
-		select {
-		case sig := <-signalChannel:
-			xlog.Info(ctx, "Got OS signal, stopping aardappel....", zap.String("signal name", sig.String()))
-			cancel()
-		}
-	}()
 
 	defer logger.Sync()
 
@@ -382,21 +374,39 @@ func main() {
 
 	reqBuilder := GetLockerRequestBuilder(config.StateTable)
 	lockStorage := ydb_locker.YdbLockStorage{Db: dstDb.GetDriver(), ReqBuilder: reqBuilder}
+	lockTtl := time.Duration(config.MaxExpHbInterval*2) * time.Second
 	locker := ydb_locker.NewLocker(&lockStorage,
 		config.InstanceId, owner,
-		time.Duration(config.MaxExpHbInterval*2)*time.Second)
+		lockTtl)
 
 	lockChannel := locker.LockerContext(ctx)
+
+	go func() {
+		sig := <-signalChannel
+		xlog.Info(ctx, "Got OS signal, stopping aardappel....", zap.String("signal name", sig.String()))
+		cancel()
+	}()
 	var cont bool
 	var run bool = false
 	cont = true
 	var lockErrCnt uint32
 	for cont {
 		select {
-		case ydbErr := <-ydbErrorChannel:
+		case ydbErr := <-errorChannel:
 			xlog.Error(ctx, "Got ydb error", zap.Error(ydbErr))
 			cont = false
 			cancel()
+			select {
+			case _, ok := <-lockChannel:
+				if !ok {
+					cont = false
+					continue
+				} else {
+					xlog.Debug(ctx, "Waiting for lockCtxs channel to close after release")
+				}
+			case <-time.After(lockTtl):
+				xlog.Fatal(ctx, "Timeout waiting for lockCtxs channel to close after release")
+			}
 			continue
 		case lockCtx, ok := <-lockChannel:
 			// Connect to YDB
@@ -410,7 +420,7 @@ func main() {
 				xlog.Fatal(ctx, "Unable to connect to src cluster", zap.Error(err))
 			}
 			xlog.Debug(ctx, "YDB src opened")
-			go doMain(lockCtx, config, srcDb.TopicClient, dstDb, locker, mon, ydbErrorChannel)
+			go doMain(lockCtx, config, srcDb.TopicClient, dstDb, locker, mon, errorChannel)
 			run = true
 		case <-time.After(5 * time.Second):
 			if run == true {
