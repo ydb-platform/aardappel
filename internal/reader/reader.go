@@ -9,10 +9,11 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
-	"github.com/ydb-platform/ydb-go-sdk/v3/topic/topicoptions"
-	"go.uber.org/zap"
 	"io"
 	"sync"
+
+	"github.com/ydb-platform/ydb-go-sdk/v3/topic/topicoptions"
+	"go.uber.org/zap"
 )
 
 type StreamInfo struct {
@@ -35,7 +36,7 @@ type TopicReaderGuard struct {
 
 type UpdateOffsetFunc func(offset int64, partitionID int64)
 
-func MakeTopicReaderGuard() (topicoptions.GetPartitionStartOffsetFunc, UpdateOffsetFunc) {
+func MakeTopicReaderGuard(errChannel chan error) (topicoptions.GetPartitionStartOffsetFunc, UpdateOffsetFunc) {
 	var guard TopicReaderGuard
 	guard.lastPosition = make(map[int64]int64)
 	updateOffsetFunc := func(offset int64, partitionID int64) {
@@ -55,15 +56,12 @@ func MakeTopicReaderGuard() (topicoptions.GetPartitionStartOffsetFunc, UpdateOff
 		}()
 
 		var resp topicoptions.GetPartitionStartOffsetResponse
-		offset, ok := guard.lastPosition[req.PartitionID]
+		_, ok := guard.lastPosition[req.PartitionID]
 
 		if ok == true {
-			xlog.Info(ctx, "Start partition reading from offset",
-				zap.String("topic", req.Topic),
-				zap.Int64("PartitionID", req.PartitionID),
-				zap.Int64("offset", offset))
-
-			resp.StartFrom(offset)
+			err := types.NewGraceful(fmt.Sprintf("Read session has been closed: topic# %s, partitionId# %d", req.Topic, req.PartitionID))
+			errChannel <- err
+			return resp, err
 		} else {
 			xlog.Info(ctx, "Start partition reading from begin",
 				zap.String("topic", req.Topic),
@@ -145,7 +143,7 @@ func WriteAllProblemTxsUntilNextHb(ctx context.Context, streamInfo StreamInfo, r
 }
 
 func ReadTopic(ctx context.Context, streamInfo StreamInfo, reader *client.TopicReader, channel processor.Channel,
-	handler processor.ConflictHandler, updateOffsetCb UpdateOffsetFunc, dlQueue *processor.DLQueue) {
+	handler processor.ConflictHandler, updateOffsetCb UpdateOffsetFunc, dlQueue *processor.DLQueue, errChannel chan error) {
 	var mu sync.Mutex
 	lastHb := make(map[int64]types.Position)
 	// returns true - pass item, false - skip item
@@ -213,16 +211,19 @@ func ReadTopic(ctx context.Context, streamInfo StreamInfo, reader *client.TopicR
 		xlog.Error(ctx, "stop reader call returns", zap.Error(err))
 	}()
 
-	for ctx.Err() == nil {
+	lastMsgCtx := ctx
+
+	for ctx.Err() == nil && lastMsgCtx.Err() == nil {
 		msg, err := reader.ReadMessage(ctx)
 		if err != nil {
 			if ctx.Err() != nil {
 				xlog.Error(ctx, "Unable to read message", zap.Error(err))
 			} else {
-				xlog.Fatal(ctx, "Unable to read message, fatal error ctx is not cancelled", zap.Error(err))
+				xlog.Fatal(ctx, "Unable to read message", zap.Error(err))
 			}
 			return
 		}
+		lastMsgCtx = msg.Context()
 
 		updateOffsetCb(msg.Offset, msg.PartitionID())
 
@@ -246,6 +247,12 @@ func ReadTopic(ctx context.Context, streamInfo StreamInfo, reader *client.TopicR
 			}
 			rv := verifyStream(msg.PartitionID(), data)
 			data.CommitTopic = func() error {
+				if msg.Context().Err() != nil {
+					xlog.Info(ctx, fmt.Sprintf("message context is done, unable to commit: %d", msg.Offset))
+					err := types.NewGraceful(fmt.Sprintf("message context is done, unable to commit: %v", msg.Context().Err()))
+					errChannel <- err
+					return err
+				}
 				mu.Lock()
 				ret := reader.Commit(msg.Context(), msg)
 				mu.Unlock()
@@ -270,6 +277,11 @@ func ReadTopic(ctx context.Context, streamInfo StreamInfo, reader *client.TopicR
 			}
 			lastHb[msg.PartitionID()] = *types.NewPosition(data)
 			data.CommitTopic = func() error {
+				if msg.Context().Err() != nil {
+					err := types.NewGraceful(fmt.Sprintf("message context is done, unable to commit: %v", msg.Context().Err()))
+					errChannel <- err
+					return err
+				}
 				mu.Lock()
 				ret := reader.Commit(msg.Context(), msg)
 				mu.Unlock()
