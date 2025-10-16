@@ -15,6 +15,14 @@ import (
 	"errors"
 	"flag"
 	"fmt"
+	"log"
+	"os"
+	"os/signal"
+	"reflect"
+	"runtime"
+	"syscall"
+	"time"
+
 	"github.com/google/uuid"
 	"github.com/robdrynkin/ydb_locker/pkg/ydb_locker"
 	"github.com/ydb-platform/ydb-go-genproto/protos/Ydb"
@@ -24,13 +32,6 @@ import (
 	ydbTypes "github.com/ydb-platform/ydb-go-sdk/v3/table/types"
 	"github.com/ydb-platform/ydb-go-sdk/v3/topic/topicoptions"
 	"go.uber.org/zap"
-	"log"
-	"os"
-	"os/signal"
-	"reflect"
-	"runtime"
-	"syscall"
-	"time"
 )
 
 func createYdbDriverAuthOptions(oauthFile string, staticToken string) ([]ydb.Option, error) {
@@ -368,13 +369,11 @@ func main() {
 
 	reqBuilder := GetLockerRequestBuilder(config.StateTable)
 	lockStorage := ydb_locker.YdbLockStorage{Db: dstDb.GetDriver(), ReqBuilder: reqBuilder}
-	locker := ydb_locker.NewLocker(&lockStorage,
-		config.InstanceId, owner,
-		time.Duration(config.MaxExpHbInterval*2)*time.Second)
+	lockTtl := time.Duration(config.MaxExpHbInterval*2) * time.Second
+	locker := ydb_locker.NewLocker(&lockStorage, config.InstanceId, owner, lockTtl)
 
 	lockChannel := locker.LockerContext(ctx)
-	var cont bool
-	cont = true
+	cont := true
 	var lockErrCnt uint32
 	for cont {
 		select {
@@ -391,6 +390,15 @@ func main() {
 			}
 			xlog.Debug(ctx, "YDB src opened")
 			doMain(lockCtx, config, srcDb.TopicClient, dstDb, locker, mon)
+			cont = false
+			select {
+			case _, ok := <-lockChannel:
+				if !ok {
+					continue
+				}
+			case <-time.After(lockTtl):
+				xlog.Fatal(ctx, "Timeout waiting for lock to release")
+			}
 		case <-time.After(5 * time.Second):
 			if lockErrCnt == 10 {
 				cont = false
