@@ -135,7 +135,7 @@ func (ht *HeartBeatTracker) AddHb(ctx context.Context, data types.HbData) error 
 			err := hb.CommitTopic()
 
 			if err != nil {
-				errMsg := fmt.Sprintf("AddHb: unable to commit topic during update HB %w, stepId: %d, txId: %d", err,
+				errMsg := fmt.Sprintf("AddHb: unable to commit topic during update HB %v, stepId: %d, txId: %d", err,
 					hb.Step, hb.TxId)
 				return types.ReturnError(ctx, err, errMsg)
 			}
