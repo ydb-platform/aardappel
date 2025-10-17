@@ -415,6 +415,8 @@ func main() {
 			}
 			xlog.Debug(ctx, "YDB src opened")
 			err = doMain(lockCtx, config, srcDb.TopicClient, dstDb, locker, mon, errChannel)
+			xlog.Info(ctx, "Finished with error, stopping aardappel....", zap.String("error", err.Error()))
+			cancel()
 			cont = false
 			select {
 			case _, ok := <-lockChannel:
