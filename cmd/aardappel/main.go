@@ -414,7 +414,19 @@ func main() {
 				xlog.Fatal(ctx, "Unable to connect to src cluster", zap.Error(err))
 			}
 			xlog.Debug(ctx, "YDB src opened")
-			doMain(lockCtx, config, srcDb.TopicClient, dstDb, locker, mon, errChannel)
+			err = doMain(lockCtx, config, srcDb.TopicClient, dstDb, locker, mon, errChannel)
+			var appErr *types.Error
+			if errors.As(err, &appErr) {
+				switch appErr.Kind() {
+				case types.Graceful:
+					xlog.Info(ctx, "Got error, stopping aardappel....", zap.String("error", appErr.Error()))
+					cancel()
+				case types.Fatal:
+					xlog.Fatal(ctx, "Got error, stopping aardappel....", zap.String("error", appErr.Error()))
+				}
+			} else {
+				xlog.Error(ctx, "Unexpected error", zap.Error(err))
+			}
 			cont = false
 			select {
 			case _, ok := <-lockChannel:
