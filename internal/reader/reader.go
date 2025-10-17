@@ -216,8 +216,6 @@ func ReadTopic(ctx context.Context, streamInfo StreamInfo, reader *client.TopicR
 		if err != nil {
 			if ctx.Err() != nil {
 				xlog.Error(ctx, "Unable to read message", zap.Error(err))
-			} else {
-				xlog.Fatal(ctx, "Unable to read message", zap.Error(err))
 			}
 			return
 		}
