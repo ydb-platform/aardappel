@@ -211,9 +211,7 @@ func ReadTopic(ctx context.Context, streamInfo StreamInfo, reader *client.TopicR
 		xlog.Error(ctx, "stop reader call returns", zap.Error(err))
 	}()
 
-	lastMsgCtx := ctx
-
-	for ctx.Err() == nil && lastMsgCtx.Err() == nil {
+	for ctx.Err() == nil {
 		msg, err := reader.ReadMessage(ctx)
 		if err != nil {
 			if ctx.Err() != nil {
@@ -223,7 +221,6 @@ func ReadTopic(ctx context.Context, streamInfo StreamInfo, reader *client.TopicR
 			}
 			return
 		}
-		lastMsgCtx = msg.Context()
 
 		updateOffsetCb(msg.Offset, msg.PartitionID())
 
