@@ -15,6 +15,14 @@ import (
 	"errors"
 	"flag"
 	"fmt"
+	"log"
+	"os"
+	"os/signal"
+	"reflect"
+	"runtime"
+	"syscall"
+	"time"
+
 	"github.com/google/uuid"
 	"github.com/robdrynkin/ydb_locker/pkg/ydb_locker"
 	"github.com/ydb-platform/ydb-go-genproto/protos/Ydb"
@@ -24,13 +32,6 @@ import (
 	ydbTypes "github.com/ydb-platform/ydb-go-sdk/v3/table/types"
 	"github.com/ydb-platform/ydb-go-sdk/v3/topic/topicoptions"
 	"go.uber.org/zap"
-	"log"
-	"os"
-	"os/signal"
-	"reflect"
-	"runtime"
-	"syscall"
-	"time"
 )
 
 func createYdbDriverAuthOptions(oauthFile string, staticToken string) ([]ydb.Option, error) {
@@ -67,15 +68,12 @@ func EstimateReplicationLagSec(pos types.Position) float32 {
 }
 
 func DoReplication(ctx context.Context, prc *processor.Processor, dstTables []*dst_table.DstTable,
-	lockExecutor func(fn func(context.Context, table.Session, table.Transaction) error) error, mon pmon.Metrics) {
+	lockExecutor func(fn func(context.Context, table.Session, table.Transaction) error) error, mon pmon.Metrics) error {
 	passed := time.Now().UnixMilli()
 	stats, err := prc.DoReplication(ctx, dstTables, lockExecutor)
 	if err != nil {
-		if ctx.Err() != nil {
-			xlog.Error(ctx, "Context cancelled or expired during replication step", zap.Error(err))
-			return
-		}
-		xlog.Fatal(ctx, "Unable to perform replication without error", zap.Error(err))
+		errMsg := fmt.Sprintf("Unable to perform replication without error")
+		return types.ReturnError(ctx, err, errMsg)
 	}
 	passed = time.Now().UnixMilli() - passed
 	perSecond := float32(stats.ModificationsCount) / (float32(passed) / 1000.0)
@@ -102,6 +100,8 @@ func DoReplication(ctx context.Context, prc *processor.Processor, dstTables []*d
 		zap.Int("request size", stats.RequestSize),
 		zap.Float32("quorum waiting duration", float32(stats.QuorumWaitingDurationMs)/1000),
 		zap.Float32("replication lag estimation:", lag))
+
+	return nil
 }
 
 func createReplicaStateTable(ctx context.Context, client *client.TableClient, stateTable string) error {
@@ -154,7 +154,7 @@ func doDescribeTopics(ctx context.Context, config configInit.Config, srcDb *clie
 }
 
 func doMain(ctx context.Context, config configInit.Config, srcDb *client.TopicClient, dstDb *client.YdbClient,
-	locker *ydb_locker.Locker, mon pmon.Metrics) {
+	locker *ydb_locker.Locker, mon pmon.Metrics, errChannel chan error) error {
 	topics := doDescribeTopics(ctx, config, srcDb)
 
 	xlog.Debug(ctx, "All topics described",
@@ -199,7 +199,7 @@ func doMain(ctx context.Context, config configInit.Config, srcDb *client.TopicCl
 
 	for i := 0; i < len(config.Streams); i++ {
 		cfgStream := &config.Streams[i]
-		startCb, updateCb := topicReader.MakeTopicReaderGuard()
+		startCb, updateCb := topicReader.MakeTopicReaderGuard(errChannel)
 		reader, err := srcDb.StartReader(config.Streams[i].Consumer, cfgStream.SrcTopic,
 			topicoptions.WithReaderGetPartitionStartOffset(startCb))
 
@@ -223,7 +223,7 @@ func doMain(ctx context.Context, config configInit.Config, srcDb *client.TopicCl
 			PartCount:       topics.TopicPartsCountMap[i].PartitionsCount,
 			ProblemStrategy: cfgStream.ProblemStrategy}
 		xlog.Debug(ctx, "Start reading")
-		go topicReader.ReadTopic(ctx, streamInfo, reader, prc, conflictHandler, updateCb, dlQueue)
+		go topicReader.ReadTopic(ctx, streamInfo, reader, prc, conflictHandler, updateCb, dlQueue, errChannel)
 	}
 
 	lockExecutor := func(fn func(context.Context, table.Session, table.Transaction) error) error {
@@ -234,8 +234,14 @@ func doMain(ctx context.Context, config configInit.Config, srcDb *client.TopicCl
 	}
 
 	for ctx.Err() == nil {
-		DoReplication(ctx, prc, dstTables, lockExecutor, mon)
+		err := DoReplication(ctx, prc, dstTables, lockExecutor, mon)
+		if err != nil {
+			errMsg := fmt.Sprintf("doMain")
+			return types.ReturnError(ctx, err, errMsg)
+		}
 	}
+
+	return nil
 }
 
 func trySrcConnect(ctx context.Context, config configInit.Config, srcOpts []ydb.Option) bool {
@@ -290,11 +296,31 @@ func main() {
 	logger := xlog.SetupLogging(config.LogLevel)
 	xlog.SetInternalLogger(logger)
 
+	errChannel := make(chan error)
+
 	go func() {
-		select {
-		case sig := <-signalChannel:
-			xlog.Info(ctx, "Got OS signal, stopping aardappel....", zap.String("signal name", sig.String()))
-			cancel()
+		for {
+			select {
+			case sig := <-signalChannel:
+				xlog.Info(ctx, "Got OS signal, stopping aardappel....", zap.String("signal name", sig.String()))
+				cancel()
+			case err := <-errChannel:
+				if err == nil {
+					continue
+				}
+				var appErr *types.Error
+				if errors.As(err, &appErr) {
+					switch appErr.Kind() {
+					case types.Graceful:
+						xlog.Info(ctx, "Got error, stopping aardappel....", zap.String("error", appErr.Error()))
+						cancel()
+					case types.Fatal:
+						xlog.Fatal(ctx, "Got error, stopping aardappel....", zap.String("error", appErr.Error()))
+					}
+				} else {
+					xlog.Error(ctx, "Unexpected error", zap.Error(err))
+				}
+			}
 		}
 	}()
 
@@ -368,13 +394,11 @@ func main() {
 
 	reqBuilder := GetLockerRequestBuilder(config.StateTable)
 	lockStorage := ydb_locker.YdbLockStorage{Db: dstDb.GetDriver(), ReqBuilder: reqBuilder}
-	locker := ydb_locker.NewLocker(&lockStorage,
-		config.InstanceId, owner,
-		time.Duration(config.MaxExpHbInterval*2)*time.Second)
+	lockTtl := time.Duration(config.MaxExpHbInterval*2) * time.Second
+	locker := ydb_locker.NewLocker(&lockStorage, config.InstanceId, owner, lockTtl)
 
 	lockChannel := locker.LockerContext(ctx)
-	var cont bool
-	cont = true
+	cont := true
 	var lockErrCnt uint32
 	for cont {
 		select {
@@ -390,7 +414,18 @@ func main() {
 				xlog.Fatal(ctx, "Unable to connect to src cluster", zap.Error(err))
 			}
 			xlog.Debug(ctx, "YDB src opened")
-			doMain(lockCtx, config, srcDb.TopicClient, dstDb, locker, mon)
+			err = doMain(lockCtx, config, srcDb.TopicClient, dstDb, locker, mon, errChannel)
+			xlog.Info(ctx, "Finished with error, stopping aardappel....", zap.String("error", err.Error()))
+			cancel()
+			cont = false
+			select {
+			case _, ok := <-lockChannel:
+				if !ok {
+					continue
+				}
+			case <-time.After(lockTtl):
+				xlog.Fatal(ctx, "Timeout waiting for lock to release")
+			}
 		case <-time.After(5 * time.Second):
 			if lockErrCnt == 10 {
 				cont = false
