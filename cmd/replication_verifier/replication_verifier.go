@@ -412,7 +412,7 @@ func describeTable(ctx context.Context, tc table.Client, path string) (*TableSch
 func intersectColumns(src, replica *TableSchema) []string {
 	m := map[string]struct{}{}
 	for _, c := range replica.Columns {
-		if _, ok := replica.ColIndex[c.Name]; ok {
+		if _, ok := src.ColIndex[c.Name]; ok {
 			m[c.Name] = struct{}{}
 		}
 	}
@@ -494,14 +494,20 @@ func (p *pager) next(ctx context.Context) ([]Row, bool, error) {
 		declare += fmt.Sprintf("		DECLARE $k%d AS %s;\n", i, p.scheme.ColIndex[p.scheme.PK[i-1]].TypeName) + "\n"
 	}
 
+	columnsList := make([]string, 0, len(p.scheme.Comparable))
+	for _, c := range p.scheme.Comparable {
+		columnsList = append(columnsList, "\""+c+"\"")
+	}
+	columnsListStr := strings.Join(columnsList, ", ")
+
 	yql := fmt.Sprintf(`
 		%s
-		SELECT %s, Digest::MurMurHash2A(Pickle(TableRow())) AS `+"sig"+`
+		SELECT %s, Digest::MurMurHash2A(Pickle(ChooseMembers(TableRow(), [%s]))) AS `+"sig"+`
 		FROM `+"`"+`%s`+"`"+`
 		%s
 		ORDER BY %s
 		LIMIT $limit;
-	`, declare, selectList, p.scheme.Path, where, orderBy)
+	`, declare, selectList, columnsListStr, p.scheme.Path, where, orderBy)
 
 	ctxWithTimeout, cancel := context.WithTimeout(ctx, DEFAULT_TIMEOUT)
 	defer cancel()
