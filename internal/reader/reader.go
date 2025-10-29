@@ -58,12 +58,12 @@ func MakeTopicReaderGuard() (topicoptions.GetPartitionStartOffsetFunc, UpdateOff
 		offset, ok := guard.lastPosition[req.PartitionID]
 
 		if ok == true {
-			xlog.Info(ctx, "Start partition reading from offset",
+			xlog.Fatal(ctx, "Start partition reading from offset",
 				zap.String("topic", req.Topic),
 				zap.Int64("PartitionID", req.PartitionID),
 				zap.Int64("offset", offset))
 
-			resp.StartFrom(offset)
+			//resp.StartFrom(offset)
 		} else {
 			xlog.Info(ctx, "Start partition reading from begin",
 				zap.String("topic", req.Topic),
