@@ -13,16 +13,17 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
+	"sync"
+	"sync/atomic"
+	"time"
+
 	"github.com/ydb-platform/ydb-go-sdk/v3/table"
 	"github.com/ydb-platform/ydb-go-sdk/v3/table/options"
 	"github.com/ydb-platform/ydb-go-sdk/v3/table/result/named"
 	ydbTypes "github.com/ydb-platform/ydb-go-sdk/v3/table/types"
 	"github.com/ydb-platform/ydb-go-sdk/v3/topic/topicreader"
 	"go.uber.org/zap"
-	"io"
-	"sync"
-	"sync/atomic"
-	"time"
 )
 
 const REPLICATION_OK = "OK"
@@ -83,8 +84,8 @@ type ReplicationStats struct {
 }
 
 type Channel interface {
-	EnqueueTx(ctx context.Context, data types.TxData)
-	EnqueueHb(ctx context.Context, heartbeat types.HbData)
+	EnqueueTx(ctx context.Context, data types.TxData) error
+	EnqueueHb(ctx context.Context, heartbeat types.HbData) error
 	SaveReplicationState(ctx context.Context, state string, lastError string) error
 }
 
@@ -365,7 +366,7 @@ func (processor *Processor) Enqueue(ctx context.Context, fn func() error) {
 	}
 }
 
-func (processor *Processor) EnqueueHb(ctx context.Context, hb types.HbData) {
+func (processor *Processor) EnqueueHb(ctx context.Context, hb types.HbData) error {
 	// Skip all before we already processed
 	lastPosition := processor.lastPosition.Load()
 	xlog.Debug(ctx, "got hb", zap.Uint64("step", hb.Step), zap.Uint64("tx_id", hb.TxId),
@@ -375,12 +376,13 @@ func (processor *Processor) EnqueueHb(ctx context.Context, hb types.HbData) {
 	if types.NewPosition(hb).LessThan(lastPosition) {
 		err := hb.CommitTopic()
 		if err != nil {
-			xlog.Fatal(ctx, "unable to commit topic", zap.Error(err))
+			errMsg := fmt.Sprintf("EnqueueHb: Unable to commit topic")
+			return types.ReturnError(ctx, err, errMsg)
 		}
 		xlog.Debug(ctx, "skip old hb",
 			zap.Uint64("step", hb.Step),
 			zap.Uint64("tx_id", hb.TxId))
-		return
+		return nil
 	}
 	fn := func() error {
 		lastPosition := processor.lastPosition.Load()
@@ -393,10 +395,11 @@ func (processor *Processor) EnqueueHb(ctx context.Context, hb types.HbData) {
 				zap.Uint64("our_tx_id", lastPosition.TxId))
 			return nil
 		}
-		return processor.hbTracker.AddHb(hb)
+		return processor.hbTracker.AddHb(ctx, hb)
 	}
 
 	processor.Enqueue(ctx, fn)
+	return nil
 }
 
 func (processor *Processor) SaveReplicationState(ctx context.Context, status string, lastError string) error {
@@ -416,7 +419,7 @@ func (processor *Processor) SaveReplicationState(ctx context.Context, status str
 		})
 }
 
-func (processor *Processor) EnqueueTx(ctx context.Context, tx types.TxData) {
+func (processor *Processor) EnqueueTx(ctx context.Context, tx types.TxData) error {
 	// Skip all before we already processed
 	lastPosition := processor.lastPosition.Load()
 	xlog.Debug(ctx, "got tx", zap.Uint64("step", tx.Step),
@@ -426,12 +429,13 @@ func (processor *Processor) EnqueueTx(ctx context.Context, tx types.TxData) {
 	if (types.Position{tx.Step, tx.TxId}.LessThan(lastPosition)) {
 		err := tx.CommitTopic()
 		if err != nil {
-			xlog.Fatal(ctx, "unable to commit topic", zap.Error(err))
+			errMsg := fmt.Sprintf("EnqueueTx: Unable to commit topic")
+			return types.ReturnError(ctx, err, errMsg)
 		}
 		xlog.Debug(ctx, "skip old tx",
 			zap.Uint64("step", tx.Step),
 			zap.Uint64("tx_id", tx.TxId))
-		return
+		return nil
 	}
 	fn := func() error {
 		lastPosition := processor.lastPosition.Load()
@@ -449,6 +453,7 @@ func (processor *Processor) EnqueueTx(ctx context.Context, tx types.TxData) {
 	}
 
 	processor.Enqueue(ctx, fn)
+	return nil
 }
 
 func (processor *Processor) getQueryRequestSize(query dst_table.PushQuery) int {
@@ -504,8 +509,8 @@ func (processor *Processor) doEvent(ctx context.Context) error {
 		case fn := <-processor.txChannel:
 			err := fn()
 			if err != nil {
-				xlog.Debug(ctx, "Unable to push event", zap.Error(err))
-				return err
+				errMsg := fmt.Sprintf("Processor.doEvent: Unable to push event")
+				return types.ReturnError(ctx, err, errMsg)
 			}
 		default:
 			maxEventPerIteration = 0
@@ -518,7 +523,8 @@ func (processor *Processor) getHbQuorum(ctx context.Context) (*types.HbData, err
 	// Try to get any quorum.
 	err := processor.doEvent(ctx)
 	if err != nil {
-		return nil, err
+		errMsg := fmt.Sprintf("Processor.getHbQuorum")
+		return nil, types.ReturnError(ctx, err, errMsg)
 	}
 	hb, ok := processor.hbTracker.GetQuorum()
 	if ok {
@@ -532,7 +538,8 @@ func (processor *Processor) getHbQuorumAfter(ctx context.Context, hb types.HbDat
 	// Try to get quorum that will be large then hb timestamp.
 	err := processor.doEvent(ctx)
 	if err != nil {
-		return nil, err
+		errMsg := fmt.Sprintf("Processor.getHbQuorumAfter")
+		return nil, types.ReturnError(ctx, err, errMsg)
 	}
 	resHb, ok := processor.hbTracker.GetQuorumAfter(hb)
 	if ok {
@@ -551,7 +558,8 @@ func (processor *Processor) waitHbQuorum(ctx context.Context) (types.HbData, err
 	for ctx.Err() == nil {
 		hb, err := processor.getHbQuorum(ctx)
 		if err != nil {
-			return types.HbData{}, err
+			errMsg := fmt.Sprintf("Processor.waitHbQuorum")
+			return types.HbData{}, types.ReturnError(ctx, err, errMsg)
 		}
 		if hb != nil {
 			return *hb, nil
@@ -567,7 +575,8 @@ func (processor *Processor) waitSyncHbQuorum(ctx context.Context, hb types.HbDat
 	for ctx.Err() == nil {
 		resHb, err := processor.getHbQuorumAfter(ctx, hb)
 		if err != nil {
-			return types.HbData{}, err
+			errMsg := fmt.Sprintf("Processor.waitSyncHbQuorum")
+			return types.HbData{}, types.ReturnError(ctx, err, errMsg)
 		}
 		if resHb != nil {
 			return *resHb, nil
@@ -583,7 +592,8 @@ func (processor *Processor) getSyncHbQuorum(ctx context.Context) (*types.HbData,
 	// This quorum is the first larger quorum than the max hb timestamp in the first quorum obtained in initial scan stage.
 	err := processor.doEvent(ctx)
 	if err != nil {
-		return nil, err
+		errMsg := fmt.Sprintf("Processor.getSyncHbQuorum")
+		return nil, types.ReturnError(ctx, err, errMsg)
 	}
 	quorumExist := processor.hbTracker.GetReady()
 	if !quorumExist {
@@ -592,7 +602,8 @@ func (processor *Processor) getSyncHbQuorum(ctx context.Context) (*types.HbData,
 	maxHb := processor.hbTracker.GetMaxHb()
 	hb, err := processor.waitSyncHbQuorum(ctx, maxHb)
 	if err != nil {
-		return nil, err
+		errMsg := fmt.Sprintf("Processor.getSyncHbQuorum")
+		return nil, types.ReturnError(ctx, err, errMsg)
 	}
 	return &hb, nil
 }
@@ -606,7 +617,8 @@ func (processor *Processor) DoInitialScan(ctx context.Context, dstTables []*dst_
 		// This quorum should be greater than the max hb timestamp in the first quorum obtained during the initial scan
 		hb, err := processor.getSyncHbQuorum(ctx)
 		if err != nil {
-			return nil, err
+			errMsg := fmt.Sprintf("Processor.DoInitialScan")
+			return nil, types.ReturnError(ctx, err, errMsg)
 		}
 		if hb != nil {
 			xlog.Debug(ctx, "Got sync hb", zap.Any("step", hb.Step), zap.Any("tx_id", hb.TxId))
@@ -678,7 +690,8 @@ func (processor *Processor) DoInitialScan(ctx context.Context, dstTables []*dst_
 	for i := 0; i < len(txs); i++ {
 		err := txs[i].CommitTopic()
 		if err != nil {
-			return nil, fmt.Errorf("%w; Unable to commit topic fot dataTx", err)
+			errMsg := fmt.Sprintf("DoInitialScan: Unable to commit topic fot dataTx")
+			return nil, types.ReturnError(ctx, err, errMsg)
 		}
 	}
 
@@ -687,8 +700,10 @@ func (processor *Processor) DoInitialScan(ctx context.Context, dstTables []*dst_
 			zap.Uint64("step", processor.initialScanPos.Step),
 			zap.Uint64("tx_id", processor.initialScanPos.TxId))
 		err := processor.initialScanPos.CommitTopic()
+
 		if err != nil {
-			return nil, fmt.Errorf("%w; Unable to commit topic fot hb", err)
+			errMsg := fmt.Sprintf("DoInitialScan: Unable to commit topic fot hb")
+			return nil, types.ReturnError(ctx, err, errMsg)
 		}
 	}
 
@@ -705,7 +720,8 @@ func (processor *Processor) FormatTx(ctx context.Context) (*TxBatch, int64, erro
 	hb, err := processor.waitHbQuorum(ctx)
 	quorumWaitingDuration = time.Now().UnixMilli() - quorumWaitingDuration
 	if err != nil {
-		return nil, 0, err
+		errMsg := fmt.Sprintf("processor.waitFormatTx")
+		return nil, 0, types.ReturnError(ctx, err, errMsg)
 	}
 
 	// Here we have heartbeat and filled TxQueue - ready to format TX
@@ -754,7 +770,8 @@ func (processor *Processor) DoReplication(ctx context.Context, dstTables []*dst_
 
 	batch, quorumWaitingDuration, err := processor.FormatTx(ctx)
 	if err != nil {
-		return nil, fmt.Errorf("%w; Unable to format tx for destination", err)
+		errMsg := fmt.Sprintf("processor.DoReplication")
+		return nil, types.ReturnError(ctx, err, errMsg)
 	}
 
 	query, requestStats, err := processor.assignTxsToDstTables(ctx, batch.TxData, dstTables)
@@ -779,7 +796,8 @@ func (processor *Processor) DoReplication(ctx context.Context, dstTables []*dst_
 	for i := 0; i < len(batch.TxData); i++ {
 		err := batch.TxData[i].CommitTopic()
 		if err != nil {
-			return nil, fmt.Errorf("%w; Unable to commit topic fot dataTx", err)
+			errMsg := fmt.Sprintf("DoReplication: Unable to commit topic fot dataTx")
+			return nil, types.ReturnError(ctx, err, errMsg)
 		}
 	}
 
@@ -788,7 +806,8 @@ func (processor *Processor) DoReplication(ctx context.Context, dstTables []*dst_
 		zap.Uint64("tx_id", batch.Hb.TxId))
 	err = batch.Hb.CommitTopic()
 	if err != nil {
-		return nil, fmt.Errorf("%w; Unable to commit topic fot hb", err)
+		errMsg := fmt.Sprintf("DoReplication: Unable to commit topic fot hb")
+		return nil, types.ReturnError(ctx, err, errMsg)
 	}
 	return &ReplicationStats{requestStats.ModificationsCount,
 		*types.NewPosition(batch.Hb),

@@ -3,6 +3,7 @@ package tx_queue
 import (
 	"aardappel/internal/hb_tracker"
 	"aardappel/internal/types"
+	"context"
 	"testing"
 )
 
@@ -18,8 +19,9 @@ func CreateDummyMap() hb_tracker.TopicPartsCount {
 }
 
 func TestNotAllPart(t *testing.T) {
+	ctx := context.Background()
 	tracker := hb_tracker.NewHeartBeatTracker(CreateDummyMap())
-	_ = tracker.AddHb(types.HbData{StreamId: types.ElementaryStreamId{ReaderId: 0, PartitionId: 0}, Step: 0})
+	_ = tracker.AddHb(ctx, types.HbData{StreamId: types.ElementaryStreamId{ReaderId: 0, PartitionId: 0}, Step: 0})
 
 	_, ready := tracker.GetQuorum()
 	if ready {
@@ -28,6 +30,7 @@ func TestNotAllPart(t *testing.T) {
 }
 
 func TestGetLowestHb(t *testing.T) {
+	ctx := context.Background()
 	tracker := hb_tracker.NewHeartBeatTracker(CreateDummyMap())
 	var c1, c2, c3, c4, c5, c6, c7 bool
 	f1 := func() error { c1 = true; return nil }
@@ -37,15 +40,15 @@ func TestGetLowestHb(t *testing.T) {
 	f5 := func() error { c5 = true; return nil }
 	f6 := func() error { c6 = true; return nil }
 	f7 := func() error { c7 = true; return nil }
-	_ = tracker.AddHb(types.HbData{StreamId: types.ElementaryStreamId{ReaderId: 0, PartitionId: 0}, Step: 3, CommitTopic: f1})
-	_ = tracker.AddHb(types.HbData{StreamId: types.ElementaryStreamId{ReaderId: 0, PartitionId: 0}, Step: 5, CommitTopic: f2})
-	_ = tracker.AddHb(types.HbData{StreamId: types.ElementaryStreamId{ReaderId: 0, PartitionId: 0}, Step: 6, CommitTopic: f3})
+	_ = tracker.AddHb(ctx, types.HbData{StreamId: types.ElementaryStreamId{ReaderId: 0, PartitionId: 0}, Step: 3, CommitTopic: f1})
+	_ = tracker.AddHb(ctx, types.HbData{StreamId: types.ElementaryStreamId{ReaderId: 0, PartitionId: 0}, Step: 5, CommitTopic: f2})
+	_ = tracker.AddHb(ctx, types.HbData{StreamId: types.ElementaryStreamId{ReaderId: 0, PartitionId: 0}, Step: 6, CommitTopic: f3})
 
-	_ = tracker.AddHb(types.HbData{StreamId: types.ElementaryStreamId{ReaderId: 0, PartitionId: 1}, Step: 2, CommitTopic: f4})
-	_ = tracker.AddHb(types.HbData{StreamId: types.ElementaryStreamId{ReaderId: 0, PartitionId: 1}, Step: 7, CommitTopic: f5})
+	_ = tracker.AddHb(ctx, types.HbData{StreamId: types.ElementaryStreamId{ReaderId: 0, PartitionId: 1}, Step: 2, CommitTopic: f4})
+	_ = tracker.AddHb(ctx, types.HbData{StreamId: types.ElementaryStreamId{ReaderId: 0, PartitionId: 1}, Step: 7, CommitTopic: f5})
 
-	_ = tracker.AddHb(types.HbData{StreamId: types.ElementaryStreamId{ReaderId: 1, PartitionId: 1}, Step: 4, CommitTopic: f6})
-	_ = tracker.AddHb(types.HbData{StreamId: types.ElementaryStreamId{ReaderId: 1, PartitionId: 0}, Step: 5, CommitTopic: f7})
+	_ = tracker.AddHb(ctx, types.HbData{StreamId: types.ElementaryStreamId{ReaderId: 1, PartitionId: 1}, Step: 4, CommitTopic: f6})
+	_ = tracker.AddHb(ctx, types.HbData{StreamId: types.ElementaryStreamId{ReaderId: 1, PartitionId: 0}, Step: 5, CommitTopic: f7})
 
 	hb, ready := tracker.GetQuorum()
 	if !ready {
@@ -65,7 +68,7 @@ func TestGetLowestHb(t *testing.T) {
 		t.Error("Expect ready status - we haven't add heartbeat for each part")
 	}
 
-	_ = tracker.AddHb(types.HbData{StreamId: types.ElementaryStreamId{ReaderId: 1, PartitionId: 1}, Step: 5})
+	_ = tracker.AddHb(ctx, types.HbData{StreamId: types.ElementaryStreamId{ReaderId: 1, PartitionId: 1}, Step: 5})
 
 	hb, ready = tracker.GetQuorum()
 	if !ready {
