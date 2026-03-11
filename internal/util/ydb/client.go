@@ -5,6 +5,8 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	ydbZap "github.com/ydb-platform/ydb-go-sdk-zap"
+	"github.com/ydb-platform/ydb-go-sdk/v3/trace"
 	"strings"
 	"time"
 
@@ -138,7 +140,8 @@ type YdbClient struct {
 	TopicClient *TopicClient
 }
 
-func NewYdbClient(ctx context.Context, connectionString string, opts ...ydb.Option) (*YdbClient, error) {
+func NewYdbClient(ctx context.Context, logger *zap.Logger, connectionString string, opts ...ydb.Option) (*YdbClient, error) {
+	opts = append(opts, ydbZap.WithTraces(logger, trace.DetailsAll))
 	driver, err := ydb.Open(ctx, connectionString, opts...)
 	if err != nil {
 		return nil, HandleRequestError(ctx, err)
