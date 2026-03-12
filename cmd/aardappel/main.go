@@ -244,8 +244,8 @@ func doMain(ctx context.Context, config configInit.Config, srcDb *client.TopicCl
 	return nil
 }
 
-func trySrcConnect(ctx context.Context, config configInit.Config, srcOpts []ydb.Option) bool {
-	srcDb, err := client.NewYdbClient(ctx, config.SrcConnectionString, srcOpts...)
+func trySrcConnect(ctx context.Context, logger *zap.Logger, config configInit.Config, srcOpts []ydb.Option) bool {
+	srcDb, err := client.NewYdbClient(ctx, logger, config.SrcConnectionString, srcOpts...)
 	if err != nil {
 		xlog.Fatal(ctx, "Unable to connect to src cluster", zap.Error(err))
 	}
@@ -359,7 +359,7 @@ func main() {
 		dstOpts = append(dstOpts, ydb.WithBalancer(balancers.SingleConn()))
 	}
 
-	dstDb, err := client.NewYdbClient(ctx, config.DstConnectionString, dstOpts...)
+	dstDb, err := client.NewYdbClient(ctx, logger, config.DstConnectionString, dstOpts...)
 	if err != nil {
 		xlog.Fatal(ctx, "Unable to connect to dst cluster", zap.Error(err))
 	}
@@ -377,7 +377,7 @@ func main() {
 			zap.String("unable to init table", config.StateTable), zap.Error(err))
 	}
 
-	if trySrcConnect(ctx, config, srcOpts) {
+	if trySrcConnect(ctx, logger, config, srcOpts) {
 		if tryDstConnect(ctx, config, dstDb.TableClient) {
 			if mon != nil {
 				mon.SetCompleted()
@@ -409,7 +409,7 @@ func main() {
 				continue
 			}
 			lockErrCnt = 0
-			srcDb, err := client.NewYdbClient(lockCtx, config.SrcConnectionString, srcOpts...)
+			srcDb, err := client.NewYdbClient(lockCtx, logger, config.SrcConnectionString, srcOpts...)
 			if err != nil {
 				xlog.Fatal(ctx, "Unable to connect to src cluster", zap.Error(err))
 			}
