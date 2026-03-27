@@ -1,0 +1,17 @@
+src_connection_string: "grpc://localhost:2136/Root/test"
+src_client_balancer: false
+src_static_token: "root@builtin"
+
+dst_connection_string: "grpc://localhost:2136/Root/test"
+dst_client_balancer: false
+dst_static_token: "root@builtin"
+
+sleep_between_diffs: "30s"   # пауза между проходами
+batch_size: 2                    # размер страницы (батча)
+output_dir: "./out"              # куда писать CSV
+
+tables:
+  - source: "/Root/test/table1"
+    replica: "/Root/test/table1_copy"
+  - source: "/Root/test/table2"
+    replica: "/Root/test/table2_copy"
