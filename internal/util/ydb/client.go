@@ -16,9 +16,6 @@ import (
 	"github.com/ydb-platform/ydb-go-sdk/v3/topic/topictypes"
 	"github.com/ydb-platform/ydb-go-sdk/v3/topic/topicwriter"
 	"go.uber.org/zap"
-
-	ydbZap "github.com/ydb-platform/ydb-go-sdk-zap"
-	"github.com/ydb-platform/ydb-go-sdk/v3/trace"
 )
 
 const DEFAULT_TIMEOUT = 5 * time.Second
@@ -141,8 +138,7 @@ type YdbClient struct {
 	TopicClient *TopicClient
 }
 
-func NewYdbClient(ctx context.Context, logger *zap.Logger, connectionString string, opts ...ydb.Option) (*YdbClient, error) {
-	opts = append(opts, ydbZap.WithTraces(logger, trace.DetailsAll))
+func NewYdbClient(ctx context.Context, connectionString string, opts ...ydb.Option) (*YdbClient, error) {
 	driver, err := ydb.Open(ctx, connectionString, opts...)
 	if err != nil {
 		return nil, HandleRequestError(ctx, err)
