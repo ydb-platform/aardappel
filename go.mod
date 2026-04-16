@@ -7,7 +7,7 @@ toolchain go1.22.4
 require (
 	github.com/google/uuid v1.6.0
 	github.com/prometheus/client_golang v1.20.5
-	github.com/robdrynkin/ydb_locker v0.0.0-20240822143449-3fcf5898ea5e
+	github.com/robdrynkin/ydb_locker v0.0.0-20260415163000-b599d660dda2
 	github.com/stretchr/testify v1.10.0
 	github.com/testcontainers/testcontainers-go v0.34.0
 	github.com/ydb-platform/ydb-go-genproto v0.0.0-20241112172322-ea1f63298f77

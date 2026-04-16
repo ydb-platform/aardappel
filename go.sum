@@ -175,8 +175,8 @@ github.com/prometheus/procfs v0.15.1 h1:YagwOFzUgYfKKHX6Dr+sHT7km/hxC76UB0leargg
 github.com/prometheus/procfs v0.15.1/go.mod h1:fB45yRUv8NstnjriLhBQLuOUt+WW4BsoGhij/e3PBqk=
 github.com/rekby/fixenv v0.6.1 h1:jUFiSPpajT4WY2cYuc++7Y1zWrnCxnovGCIX72PZniM=
 github.com/rekby/fixenv v0.6.1/go.mod h1:/b5LRc06BYJtslRtHKxsPWFT/ySpHV+rWvzTg+XWk4c=
-github.com/robdrynkin/ydb_locker v0.0.0-20240822143449-3fcf5898ea5e h1:HzmdIqgonVmcPuaLvjsp++0IYsxXEYqtykiXtO+dca0=
-github.com/robdrynkin/ydb_locker v0.0.0-20240822143449-3fcf5898ea5e/go.mod h1:fe5WO/T+m2Wj/BK/y9rxxod7IA8eWGfvfm+kZSz0mHM=
+github.com/robdrynkin/ydb_locker v0.0.0-20260415163000-b599d660dda2 h1:pGyNqBohOMBeYvoumTGRwIoHNBNKh+jFcx1IHoAU+LI=
+github.com/robdrynkin/ydb_locker v0.0.0-20260415163000-b599d660dda2/go.mod h1:fe5WO/T+m2Wj/BK/y9rxxod7IA8eWGfvfm+kZSz0mHM=
 github.com/rogpeppe/fastuuid v1.2.0/go.mod h1:jVj6XXZzXRy/MSR5jhDC/2q6DgLz+nrA6LYCDYWNEvQ=
 github.com/rogpeppe/go-internal v1.10.0 h1:TMyTOH3F/DB16zRVcYyreMH6GnZZrwQVAoYjRBZyWFQ=
 github.com/rogpeppe/go-internal v1.10.0/go.mod h1:UQnix2H7Ngw/k4C5ijL5+65zddjncjaFoBhdsK/akog=
