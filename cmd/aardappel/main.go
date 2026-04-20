@@ -11,6 +11,7 @@ import (
 	"aardappel/internal/util/misc"
 	"aardappel/internal/util/xlog"
 	client "aardappel/internal/util/ydb"
+	"aardappel/internal/util/ydb/ydb_locker"
 	"context"
 	"errors"
 	"flag"
@@ -24,7 +25,6 @@ import (
 	"time"
 
 	"github.com/google/uuid"
-	"github.com/robdrynkin/ydb_locker/pkg/ydb_locker"
 	"github.com/ydb-platform/ydb-go-genproto/protos/Ydb"
 	"github.com/ydb-platform/ydb-go-sdk/v3"
 	"github.com/ydb-platform/ydb-go-sdk/v3/balancers"
