@@ -3,19 +3,34 @@ package ydb_locker
 import (
 	"context"
 	"fmt"
+	"github.com/stretchr/testify/suite"
 	"github.com/ydb-platform/ydb-go-sdk/v3"
 	"github.com/ydb-platform/ydb-go-sdk/v3/scripting"
-	"github.com/ydb-platform/ydb-go-sdk/v3/sugar"
 	"github.com/ydb-platform/ydb-go-sdk/v3/table"
 	"testing"
 	"time"
+	"aardappel/tests/common/local_ydb"
 )
 
-func ConnectToDb(t *testing.T, ctx context.Context) *ydb.Driver {
-	db, err := ydb.Open(ctx, sugar.DSN("localhost:2136", "local", false))
-	if err != nil {
-		t.Fatal("Db connection error", err)
-	}
+type YdbRequestTestSuite struct {
+	suite.Suite
+
+	LocalYdb local_ydb.Ydb
+}
+
+func YdbRequestTest(t *testing.T) {
+	suite.Run(t, new(YdbRequestTestSuite))
+}
+
+func (suite *YdbRequestTestSuite) SetupSuite() {
+	ydbSettings := local_ydb.NewYdbSettings()
+	ydbSettings.OnDisk = true
+	localYdb := local_ydb.StartupYdb(suite.T(), *ydbSettings)
+	suite.LocalYdb = localYdb
+}
+
+func ConnectToDb(t *testing.T, localYdb local_ydb.Ydb, ctx context.Context) *ydb.Driver {
+	db := localYdb.ConnectToDb(t, ctx)
 	return db
 }
 
@@ -50,9 +65,10 @@ func simpleTryLockCheck(t *testing.T, ctx context.Context, db *ydb.Driver, lockN
 	}
 }
 
-func TestAcquireLock(t *testing.T) {
+func (suite *YdbRequestTestSuite) TestAcquireLock() {
 	ctx := context.Background()
-	db := ConnectToDb(t, ctx)
+	t := suite.T()
+	db := ConnectToDb(t, suite.LocalYdb, ctx)
 	tableName := "TestAcquireLock"
 	reqBuilder := GetDefaultRequestBuilder(tableName)
 
@@ -69,9 +85,10 @@ func TestAcquireLock(t *testing.T) {
 	simpleTryLockCheck(t, ctx, db, "lock1", "owner1", reqBuilder)
 }
 
-func TestAcquireLockWithExistingTable(t *testing.T) {
+func (suite *YdbRequestTestSuite) TestAcquireLockWithExistingTable() {
 	ctx := context.Background()
-	db := ConnectToDb(t, ctx)
+	t := suite.T()
+	db := ConnectToDb(t, suite.LocalYdb, ctx)
 	reqBuilder := &LockRequestBuilderImpl{
 		TableName:          "TestAcquireLockWithExistingTable",
 		LockNameColumnName: "lock_name",
@@ -100,5 +117,4 @@ func TestAcquireLockWithExistingTable(t *testing.T) {
 	}
 
 	simpleTryLockCheck(t, ctx, db, "lock1", "owner1", reqBuilder)
-
 }

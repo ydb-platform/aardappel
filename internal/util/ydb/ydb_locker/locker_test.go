@@ -3,12 +3,31 @@ package ydb_locker
 import (
 	"context"
 	"github.com/google/uuid"
+	"github.com/stretchr/testify/suite"
 	"github.com/ydb-platform/ydb-go-sdk/v3/table"
 	"log"
 	"sync"
 	"testing"
 	"time"
+	"aardappel/tests/common/local_ydb"
 )
+
+type LockerTestSuite struct {
+	suite.Suite
+
+	LocalYdb local_ydb.Ydb
+}
+
+func TestLocker(t *testing.T) {
+	suite.Run(t, new(LockerTestSuite))
+}
+
+func (suite *LockerTestSuite) SetupSuite() {
+	ydbSettings := local_ydb.NewYdbSettings()
+	ydbSettings.OnDisk = true
+	localYdb := local_ydb.StartupYdb(suite.T(), *ydbSettings)
+	suite.LocalYdb = localYdb
+}
 
 func TestLocalLockerCtxSingleWorker(t *testing.T) {
 	ctx := context.Background()
@@ -69,9 +88,10 @@ func TestLocalLockerCtxMultipleWorkersGracefulStop(t *testing.T) {
 	}
 }
 
-func TestYdbLockerCtxSingleWorker(t *testing.T) {
+func (suite *LockerTestSuite) TestYdbLockerCtxSingleWorker() {
 	ctx := context.Background()
-	db := ConnectToDb(t, ctx)
+	t := suite.T()
+	db := ConnectToDb(t, suite.LocalYdb, ctx)
 	customReqBuilder := LockRequestBuilderImpl{
 		"TestRunInLockerThreadSingleWorker",
 		"lock_name_123",
@@ -103,9 +123,10 @@ func TestYdbLockerCtxSingleWorker(t *testing.T) {
 	}
 }
 
-func TestYdbLockerCtxMultipleWorkers(t *testing.T) {
+func (suite *LockerTestSuite) TestYdbLockerCtxMultipleWorkers() {
 	ctx := context.Background()
-	db := ConnectToDb(t, ctx)
+	t := suite.T()
+	db := ConnectToDb(t, suite.LocalYdb, ctx)
 	reqBuilder := GetDefaultRequestBuilder("TestRunInLockerThreadMultipleWorkers")
 	lockName := "lock2"
 
@@ -151,9 +172,10 @@ func TestYdbLockerCtxMultipleWorkers(t *testing.T) {
 	}
 }
 
-func TestYdbLockerCtxSingleWorkerLongTx(t *testing.T) {
+func (suite *LockerTestSuite) TestYdbLockerCtxSingleWorkerLongTx() {
 	ctx := context.Background()
-	db := ConnectToDb(t, ctx)
+	t := suite.T()
+	db := ConnectToDb(t, suite.LocalYdb, ctx)
 	customReqBuilder := LockRequestBuilderImpl{
 		"TestRunInLockerThreadSingleWorker",
 		"lock_name_123",
