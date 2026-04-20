@@ -19,7 +19,6 @@ import (
 	"time"
 
 	"github.com/ydb-platform/ydb-go-sdk/v3/table"
-	"github.com/ydb-platform/ydb-go-sdk/v3/table/options"
 	"github.com/ydb-platform/ydb-go-sdk/v3/table/result/named"
 	ydbTypes "github.com/ydb-platform/ydb-go-sdk/v3/table/types"
 	"github.com/ydb-platform/ydb-go-sdk/v3/topic/topicreader"
@@ -751,14 +750,22 @@ func (processor *Processor) PushAsSingleTx(ctx context.Context, data dst_table.P
 
 	ctxWithTimeout, cancel := context.WithTimeout(ctx, client.DEFAULT_TIMEOUT)
 	defer cancel()
-	_, err := tx.Execute(ctxWithTimeout, data.Query+processor.stateStoreQuery, &param, options.WithCommit())
-	return client.HandleRequestError(ctx, err)
+	_, err := tx.Execute(ctxWithTimeout, data.Query+processor.stateStoreQuery, &param)
+	if err != nil {
+		return client.HandleRequestError(ctx, err)
+	}
+	_, err = tx.CommitTx(ctxWithTimeout)
+	return client.HandleRequestError(ctxWithTimeout, err)
 }
 
 func (processor *Processor) PushTxs(ctx context.Context, data dst_table.PushQuery, tx table.Transaction) error {
 	ctxWithTimeout, cancel := context.WithTimeout(ctx, client.DEFAULT_TIMEOUT)
 	defer cancel()
-	_, err := tx.Execute(ctxWithTimeout, data.Query, &data.Parameters, options.WithCommit())
+	_, err := tx.Execute(ctxWithTimeout, data.Query, &data.Parameters)
+	if err != nil {
+		return client.HandleRequestError(ctxWithTimeout, err)
+	}
+	_, err = tx.CommitTx(ctxWithTimeout)
 	return client.HandleRequestError(ctxWithTimeout, err)
 }
 
