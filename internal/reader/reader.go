@@ -219,6 +219,7 @@ func ReadTopic(ctx context.Context, streamInfo StreamInfo, reader *client.TopicR
 			}
 			return
 		}
+		xlog.Info(ctx, "Got msg", zap.Any("msg", msg), zap.Int64("offset", msg.Offset))
 
 		updateOffsetCb(msg.Offset, msg.PartitionID())
 
