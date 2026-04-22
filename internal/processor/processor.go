@@ -373,6 +373,12 @@ func (processor *Processor) EnqueueHb(ctx context.Context, hb types.HbData) erro
 		zap.Int64("partition_id:", hb.StreamId.PartitionId),
 		zap.Bool("willSkip", types.NewPosition(hb).LessThan(lastPosition)))
 	if types.NewPosition(hb).LessThan(lastPosition) {
+		xlog.Info(ctx, "hb will not be saved in tracker because it is already behind lastPosition",
+			zap.Int64("partitionId", hb.StreamId.PartitionId),
+			zap.Uint64("step", hb.Step),
+			zap.Uint64("tx_id", hb.TxId),
+			zap.Uint64("last_step", lastPosition.Step),
+			zap.Uint64("last_tx_id", lastPosition.TxId))
 		err := hb.CommitTopic()
 		if err != nil {
 			errMsg := fmt.Sprintf("EnqueueHb: Unable to commit topic")
@@ -385,6 +391,12 @@ func (processor *Processor) EnqueueHb(ctx context.Context, hb types.HbData) erro
 	}
 	fn := func() error {
 		lastPosition := processor.lastPosition.Load()
+		xlog.Debug(ctx, "hb queued callback started",
+			zap.Int64("partitionId", hb.StreamId.PartitionId),
+			zap.Uint64("step", hb.Step),
+			zap.Uint64("tx_id", hb.TxId),
+			zap.Uint64("last_step", lastPosition.Step),
+			zap.Uint64("last_tx_id", lastPosition.TxId))
 		if types.NewPosition(hb).LessThan(lastPosition) {
 			xlog.Warn(ctx, "suspicious behaviour, hb with timestamp less then our last committed timestamp has been "+
 				"enqueued just during our commit",
@@ -394,6 +406,10 @@ func (processor *Processor) EnqueueHb(ctx context.Context, hb types.HbData) erro
 				zap.Uint64("our_tx_id", lastPosition.TxId))
 			return nil
 		}
+		xlog.Info(ctx, "hb will be passed to tracker",
+			zap.Int64("partitionId", hb.StreamId.PartitionId),
+			zap.Uint64("step", hb.Step),
+			zap.Uint64("tx_id", hb.TxId))
 		return processor.hbTracker.AddHb(ctx, hb)
 	}
 

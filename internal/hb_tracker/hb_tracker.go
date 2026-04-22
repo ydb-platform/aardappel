@@ -128,10 +128,29 @@ func (ht *HeartBeatTracker) StartHbGuard(ctx context.Context, timeout uint32, me
 func (ht *HeartBeatTracker) AddHb(ctx context.Context, data types.HbData) error {
 	ht.lock.Lock()
 	defer ht.lock.Unlock()
+	xlog.Info(ctx, "hb tracker add started",
+		zap.Int64("partitionId", data.StreamId.PartitionId),
+		zap.Uint32("reader_id", data.StreamId.ReaderId),
+		zap.Uint64("step", data.Step),
+		zap.Uint64("tx_id", data.TxId))
 	hb, ok := ht.streams[data.StreamId]
 	if ok {
+		xlog.Info(ctx, "hb tracker found existing hb for stream",
+			zap.Int64("partitionId", data.StreamId.PartitionId),
+			zap.Uint32("reader_id", data.StreamId.ReaderId),
+			zap.Uint64("existing_step", hb.Step),
+			zap.Uint64("existing_tx_id", hb.TxId),
+			zap.Uint64("new_step", data.Step),
+			zap.Uint64("new_tx_id", data.TxId))
 		if types.NewPosition(hb).LessThan(*types.NewPosition(data)) {
 			// Got new heartbeat for stream - we can commit previous one
+			xlog.Info(ctx, "hb tracker will commit previous hb before saving new hb",
+				zap.Int64("partitionId", data.StreamId.PartitionId),
+				zap.Uint32("reader_id", data.StreamId.ReaderId),
+				zap.Uint64("commit_step", hb.Step),
+				zap.Uint64("commit_tx_id", hb.TxId),
+				zap.Uint64("new_step", data.Step),
+				zap.Uint64("new_tx_id", data.TxId))
 			err := hb.CommitTopic()
 
 			if err != nil {
@@ -139,18 +158,46 @@ func (ht *HeartBeatTracker) AddHb(ctx context.Context, data types.HbData) error 
 					hb.Step, hb.TxId)
 				return types.ReturnError(ctx, err, errMsg)
 			}
+			xlog.Info(ctx, "hb tracker committed previous hb successfully",
+				zap.Int64("partitionId", data.StreamId.PartitionId),
+				zap.Uint32("reader_id", data.StreamId.ReaderId),
+				zap.Uint64("commit_step", hb.Step),
+				zap.Uint64("commit_tx_id", hb.TxId))
 			hb = data
+		} else {
+			xlog.Info(ctx, "hb tracker will keep existing hb and ignore new hb",
+				zap.Int64("partitionId", data.StreamId.PartitionId),
+				zap.Uint32("reader_id", data.StreamId.ReaderId),
+				zap.Uint64("existing_step", hb.Step),
+				zap.Uint64("existing_tx_id", hb.TxId),
+				zap.Uint64("ignored_step", data.Step),
+				zap.Uint64("ignored_tx_id", data.TxId))
 		}
 	} else {
+		xlog.Info(ctx, "hb tracker will save first hb for stream",
+			zap.Int64("partitionId", data.StreamId.PartitionId),
+			zap.Uint32("reader_id", data.StreamId.ReaderId),
+			zap.Uint64("step", data.Step),
+			zap.Uint64("tx_id", data.TxId))
 		hb = data
 	}
 	ht.streams[data.StreamId] = hb
+	xlog.Info(ctx, "hb tracker saved hb for stream",
+		zap.Int64("partitionId", data.StreamId.PartitionId),
+		zap.Uint32("reader_id", data.StreamId.ReaderId),
+		zap.Uint64("saved_step", hb.Step),
+		zap.Uint64("saved_tx_id", hb.TxId),
+		zap.Int("streams_with_hb", len(ht.streams)),
+		zap.Int("total_streams", ht.totalStreamsNum))
 
 	if len(ht.streams) > ht.totalStreamsNum {
 		return fmt.Errorf("Resulted stream count: %d grather than total count: %d",
 			len(ht.streams), ht.totalStreamsNum)
 	} else if len(ht.streams) == ht.totalStreamsNum {
 		ht.lastFullHbTime.Store(time.Now().Unix())
+		xlog.Info(ctx, "hb tracker reached full quorum coverage",
+			zap.Int("streams_with_hb", len(ht.streams)),
+			zap.Int("total_streams", ht.totalStreamsNum))
 	}
 	return nil
 }

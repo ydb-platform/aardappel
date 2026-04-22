@@ -273,14 +273,44 @@ func ReadTopic(ctx context.Context, streamInfo StreamInfo, reader *client.TopicR
 			}
 			lastHb[msg.PartitionID()] = *types.NewPosition(data)
 			data.CommitTopic = func() error {
+				xlog.Info(ctx, "topic commit requested for hb",
+					zap.Int64("partitionId", msg.PartitionID()),
+					zap.Int64("offset", msg.Offset),
+					zap.Uint64("step", data.Step),
+					zap.Uint64("tx_id", data.TxId))
 				if msg.Context().Err() != nil {
+					xlog.Info(ctx, "topic commit skipped for hb because message context is done",
+						zap.Int64("partitionId", msg.PartitionID()),
+						zap.Int64("offset", msg.Offset),
+						zap.Uint64("step", data.Step),
+						zap.Uint64("tx_id", data.TxId),
+						zap.Error(msg.Context().Err()))
 					err := types.NewGraceful(fmt.Sprintf("message context is done, unable to commit: %v", msg.Context().Err()))
 					errChannel <- err
 					return err
 				}
+				xlog.Info(ctx, "topic commit calling reader.Commit for hb",
+					zap.Int64("partitionId", msg.PartitionID()),
+					zap.Int64("offset", msg.Offset),
+					zap.Uint64("step", data.Step),
+					zap.Uint64("tx_id", data.TxId))
 				mu.Lock()
 				ret := reader.Commit(msg.Context(), msg)
 				mu.Unlock()
+				if ret != nil {
+					xlog.Error(ctx, "topic commit returned error for hb",
+						zap.Int64("partitionId", msg.PartitionID()),
+						zap.Int64("offset", msg.Offset),
+						zap.Uint64("step", data.Step),
+						zap.Uint64("tx_id", data.TxId),
+						zap.Error(ret))
+				} else {
+					xlog.Info(ctx, "topic commit returned success for hb",
+						zap.Int64("partitionId", msg.PartitionID()),
+						zap.Int64("offset", msg.Offset),
+						zap.Uint64("step", data.Step),
+						zap.Uint64("tx_id", data.TxId))
+				}
 				return ret
 			}
 			channel.EnqueueHb(ctx, data)
