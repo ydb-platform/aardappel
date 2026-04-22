@@ -223,7 +223,6 @@ func ReadTopic(ctx context.Context, streamInfo StreamInfo, reader *client.TopicR
 		updateOffsetCb(msg.Offset, msg.PartitionID())
 
 		jsonData, err := io.ReadAll(msg)
-		xlog.Info(ctx, "Got msg", zap.Any("msg", msg), zap.Int64("offset", msg.Offset), zap.Int64("partitionId", msg.PartitionID()), zap.Any("jsonData", jsonData))
 		if err != nil {
 			xlog.Error(ctx, "Unable to read all", zap.Error(err))
 			return
@@ -235,6 +234,7 @@ func ReadTopic(ctx context.Context, streamInfo StreamInfo, reader *client.TopicR
 			xlog.Error(ctx, "Error parsing topic data", zap.Error(err))
 			return
 		}
+		xlog.Info(ctx, "Got msg", zap.Any("msg", msg), zap.Int64("offset", msg.Offset), zap.Int64("partitionId", msg.PartitionID()), zap.Any("topicData", topicData))
 		if topicData.Update != nil || topicData.Erase != nil {
 			data, err := rd.ParseTxData(ctx, jsonData, streamInfo.Id)
 			if err != nil {
