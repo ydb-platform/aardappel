@@ -130,18 +130,48 @@ func (ht *HeartBeatTracker) AddHb(ctx context.Context, data types.HbData) error 
 	defer ht.lock.Unlock()
 	hb, ok := ht.streams[data.StreamId]
 	if ok {
-		if types.NewPosition(hb).LessThan(*types.NewPosition(data)) {
-			// Got new heartbeat for stream - we can commit previous one
+		storedPos := *types.NewPosition(hb)
+		newPos := *types.NewPosition(data)
+
+		switch {
+		case newPos.LessThan(storedPos):
+			xlog.Fatal(ctx, "AddHb: hb tracker received hb older than current hb",
+				zap.Uint32("reader_id", data.StreamId.ReaderId),
+				zap.Int64("partition_id", data.StreamId.PartitionId),
+				zap.Uint64("stored_step", hb.Step),
+				zap.Uint64("stored_tx_id", hb.TxId),
+				zap.Uint64("new_step", data.Step),
+				zap.Uint64("new_tx_id", data.TxId))
+
+		default:
+			logMsg := "AddHb: hb tracker received newer hb; will commit stored hb and replace it"
+			if storedPos == newPos {
+				logMsg = "AddHb: hb tracker received duplicate hb; will commit stored hb and replace it"
+			}
+
+			xlog.Debug(ctx, logMsg,
+				zap.Uint32("reader_id", data.StreamId.ReaderId),
+				zap.Int64("partition_id", data.StreamId.PartitionId),
+				zap.Uint64("stored_step", hb.Step),
+				zap.Uint64("stored_tx_id", hb.TxId),
+				zap.Uint64("new_step", data.Step),
+				zap.Uint64("new_tx_id", data.TxId))
+
 			err := hb.CommitTopic()
 
 			if err != nil {
-				errMsg := fmt.Sprintf("AddHb: unable to commit topic during update HB %v, stepId: %d, txId: %d", err,
+				errMsg := fmt.Sprintf("AddHb: unable to commit stored HB %v, stepId: %d, txId: %d", err,
 					hb.Step, hb.TxId)
 				return types.ReturnError(ctx, err, errMsg)
 			}
 			hb = data
 		}
 	} else {
+		xlog.Debug(ctx, "AddHb: hb tracker storing first hb for stream",
+			zap.Uint32("reader_id", data.StreamId.ReaderId),
+			zap.Int64("partition_id", data.StreamId.PartitionId),
+			zap.Uint64("step", data.Step),
+			zap.Uint64("tx_id", data.TxId))
 		hb = data
 	}
 	ht.streams[data.StreamId] = hb
