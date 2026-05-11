@@ -48,7 +48,6 @@ type Config struct {
 	DstStaticToken        string     `yaml:"dst_static_token"`
 	InstanceId            string     `yaml:"instance_id"`
 	MultipleInstancesMode bool       `yaml:"multiple_instances_mode"`
-	LockCheckIntervalMs   uint32     `yaml:"lock_check_interval_ms"`
 	Streams               []Stream   `yaml:"streams"`
 	StateTable            string     `yaml:"state_table"`
 	MaxExpHbInterval      uint32     `yaml:"max_expected_heartbeat_interval"`

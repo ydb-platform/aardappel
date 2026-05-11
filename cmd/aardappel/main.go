@@ -134,24 +134,6 @@ func initReplicaStateTable(ctx context.Context, client *client.TableClient, stat
 	return err
 }
 
-func waitForLock(ctx context.Context, lockStorage ydb_locker.LockStorage, lockName string, owner string, lockTtl time.Duration, lockCheckInterval time.Duration) error {
-	for {
-		curOwner, _, err := lockStorage.TryLock(ctx, lockName, owner, lockTtl)
-		if err == nil && curOwner == owner {
-			return nil
-		}
-		if err != nil {
-			xlog.Error(ctx, "unable to check lock owner while waiting for lock", zap.Error(err))
-		}
-
-		select {
-		case <-ctx.Done():
-			return ctx.Err()
-		case <-time.After(lockCheckInterval):
-		}
-	}
-}
-
 func doDescribeTopics(ctx context.Context, config configInit.Config, srcDb *client.TopicClient) hb_tracker.TopicPartsCount {
 	topics := hb_tracker.NewTopicPartsCount()
 	for i := 0; i < len(config.Streams); i++ {
@@ -415,19 +397,7 @@ func main() {
 	reqBuilder := GetLockerRequestBuilder(config.StateTable)
 	lockStorage := ydb_locker.YdbLockStorage{Db: dstDb.GetDriver(), ReqBuilder: reqBuilder}
 	lockTtl := time.Duration(config.MaxExpHbInterval*2) * time.Second
-	lockCheckInterval := defaultLockCheckInterval
-	if config.MultipleInstancesMode && config.LockCheckIntervalMs > 0 {
-		lockCheckInterval = time.Duration(config.LockCheckIntervalMs) * time.Millisecond
-	}
 	locker := ydb_locker.NewLocker(&lockStorage, config.InstanceId, owner, lockTtl)
-
-	if config.MultipleInstancesMode {
-		err = waitForLock(ctx, &lockStorage, config.InstanceId, owner, lockTtl, lockCheckInterval)
-		if err != nil {
-			xlog.Info(ctx, "aardappel has been shutted down successfully")
-			return
-		}
-	}
 	lockChannel := locker.LockerContext(ctx)
 	cont := true
 	var lockErrCnt uint32
