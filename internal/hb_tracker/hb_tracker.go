@@ -143,13 +143,13 @@ func (ht *HeartBeatTracker) AddHb(ctx context.Context, data types.HbData) error 
 				zap.Uint64("new_step", data.Step),
 				zap.Uint64("new_tx_id", data.TxId))
 
-			err := hb.CommitTopic()
+			err := data.CommitTopic()
 			if err != nil {
-				errMsg := fmt.Sprintf("AddHb: unable to commit stored HB %v, stepId: %d, txId: %d", err,
-					hb.Step, hb.TxId)
+				errMsg := fmt.Sprintf("AddHb: unable to commit HB %v, stepId: %d, txId: %d", err,
+					data.Step, data.TxId)
 				return types.ReturnError(ctx, err, errMsg)
 			}
-
+			return nil
 
 		default:
 			logMsg := "AddHb: hb tracker received newer hb; will commit stored hb and replace it"
