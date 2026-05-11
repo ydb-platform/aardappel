@@ -135,13 +135,21 @@ func (ht *HeartBeatTracker) AddHb(ctx context.Context, data types.HbData) error 
 
 		switch {
 		case newPos.LessThan(storedPos):
-			xlog.Fatal(ctx, "AddHb: hb tracker received hb older than current hb",
+			xlog.Warn(ctx, "AddHb: hb tracker received hb older than current hb",
 				zap.Uint32("reader_id", data.StreamId.ReaderId),
 				zap.Int64("partition_id", data.StreamId.PartitionId),
 				zap.Uint64("stored_step", hb.Step),
 				zap.Uint64("stored_tx_id", hb.TxId),
 				zap.Uint64("new_step", data.Step),
 				zap.Uint64("new_tx_id", data.TxId))
+
+			err := hb.CommitTopic()
+			if err != nil {
+				errMsg := fmt.Sprintf("AddHb: unable to commit stored HB %v, stepId: %d, txId: %d", err,
+					hb.Step, hb.TxId)
+				return types.ReturnError(ctx, err, errMsg)
+			}
+
 
 		default:
 			logMsg := "AddHb: hb tracker received newer hb; will commit stored hb and replace it"
