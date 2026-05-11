@@ -26,6 +26,12 @@ dst_oauth2_file: "/opt/aardappel/secrets/dst-sa/key.json"
 state_table: "aardappel_state"
 # Instance of replication process. Each aardappel process sharing the same state table should have a unique instance id to avoid mixing states.
 instance_id: "0"
+## Enable standby mode for additional instances with the same instance_id.
+## When enabled, one instance holds the lock and the others wait until it is released.
+multiple_instances_mode: false
+## How often standby instances should retry lock acquisition in milliseconds.
+## Used only when multiple_instances_mode=true.
+lock_check_interval_ms: 1000
 
 ## Replica tables and cdc sources. Transactions will be applied consistently between those tables. Multiple tables can be specified.
 streams:

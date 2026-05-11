@@ -34,6 +34,8 @@ import (
 	"go.uber.org/zap"
 )
 
+const defaultLockCheckInterval = 5 * time.Second
+
 func createYdbDriverAuthOptions(oauthFile string, staticToken string) ([]ydb.Option, error) {
 	if (len(oauthFile) > 0 && len(staticToken) > 0) || (len(oauthFile) == 0 && len(staticToken) == 0) {
 		return nil, errors.New("it's either oauth2_file or static_token option must be set")
@@ -130,6 +132,24 @@ func initReplicaStateTable(ctx context.Context, client *client.TableClient, stat
 		return nil
 	}
 	return err
+}
+
+func waitForLock(ctx context.Context, lockStorage ydb_locker.LockStorage, lockName string, owner string, lockTtl time.Duration, lockCheckInterval time.Duration) error {
+	for {
+		curOwner, _, err := lockStorage.TryLock(ctx, lockName, owner, lockTtl)
+		if err == nil && curOwner == owner {
+			return nil
+		}
+		if err != nil {
+			xlog.Error(ctx, "unable to check lock owner while waiting for lock", zap.Error(err))
+		}
+
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		case <-time.After(lockCheckInterval):
+		}
+	}
 }
 
 func doDescribeTopics(ctx context.Context, config configInit.Config, srcDb *client.TopicClient) hb_tracker.TopicPartsCount {
@@ -395,8 +415,19 @@ func main() {
 	reqBuilder := GetLockerRequestBuilder(config.StateTable)
 	lockStorage := ydb_locker.YdbLockStorage{Db: dstDb.GetDriver(), ReqBuilder: reqBuilder}
 	lockTtl := time.Duration(config.MaxExpHbInterval*2) * time.Second
+	lockCheckInterval := defaultLockCheckInterval
+	if config.MultipleInstancesMode && config.LockCheckIntervalMs > 0 {
+		lockCheckInterval = time.Duration(config.LockCheckIntervalMs) * time.Millisecond
+	}
 	locker := ydb_locker.NewLocker(&lockStorage, config.InstanceId, owner, lockTtl)
 
+	if config.MultipleInstancesMode {
+		err = waitForLock(ctx, &lockStorage, config.InstanceId, owner, lockTtl, lockCheckInterval)
+		if err != nil {
+			xlog.Info(ctx, "aardappel has been shutted down successfully")
+			return
+		}
+	}
 	lockChannel := locker.LockerContext(ctx)
 	cont := true
 	var lockErrCnt uint32
@@ -426,11 +457,12 @@ func main() {
 			case <-time.After(lockTtl):
 				xlog.Fatal(ctx, "Timeout waiting for lock to release")
 			}
-		case <-time.After(5 * time.Second):
-			if lockErrCnt == 10 {
+		case <-time.After(defaultLockCheckInterval):
+			if !config.MultipleInstancesMode && lockErrCnt == 10 {
 				cont = false
 				continue
-			} else {
+			}
+			if !config.MultipleInstancesMode {
 				lockErrCnt++
 			}
 			xlog.Info(ctx, "unable to get lock, other instance of aardappel is running")

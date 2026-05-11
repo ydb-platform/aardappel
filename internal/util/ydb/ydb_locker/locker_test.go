@@ -1,6 +1,7 @@
 package ydb_locker
 
 import (
+	"aardappel/tests/common/local_ydb"
 	"context"
 	"github.com/google/uuid"
 	"github.com/stretchr/testify/suite"
@@ -9,7 +10,6 @@ import (
 	"sync"
 	"testing"
 	"time"
-	"aardappel/tests/common/local_ydb"
 )
 
 type LockerTestSuite struct {
