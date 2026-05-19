@@ -12,6 +12,7 @@ import (
 	"log"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"time"
 )
@@ -32,6 +33,14 @@ func convertArgs(args []string) []interface{} {
 	return ifaces
 }
 
+func localYDBScriptPath() string {
+	_, filename, _, ok := runtime.Caller(0)
+	if !ok {
+		return "ydbctl.sh"
+	}
+	return filepath.Join(filepath.Dir(filename), "ydbctl.sh")
+}
+
 func createContainerRequest(containerSettings ContainerSettings) testcontainers.ContainerRequest {
 	env := map[string]string{
 		"GRPC_PORT":             grpcPort,
@@ -48,7 +57,7 @@ func createContainerRequest(containerSettings ContainerSettings) testcontainers.
 		ImagePlatform: "linux/amd64",
 		Files: []testcontainers.ContainerFile{
 			{
-				HostFilePath:      "./ydbctl.sh",
+				HostFilePath:      localYDBScriptPath(),
 				ContainerFilePath: "/initialize_local_ydb",
 				FileMode:          777,
 			},
