@@ -41,10 +41,12 @@ type Config struct {
 	SrcConnectionString   string     `yaml:"src_connection_string"`
 	SrcClientBalancer     bool       `yaml:"src_client_balancer"`
 	SrcOAuthFile          string     `yaml:"src_oauth2_file"`
+	SrcOAuthEndpoint      string     `yaml:"src_oauth2_endpoint"`
 	SrcStaticToken        string     `yaml:"src_static_token"`
 	DstConnectionString   string     `yaml:"dst_connection_string"`
 	DstClientBalancer     bool       `yaml:"dst_client_balancer"`
 	DstOAuthFile          string     `yaml:"dst_oauth2_file"`
+	DstOAuthEndpoint      string     `yaml:"dst_oauth2_endpoint"`
 	DstStaticToken        string     `yaml:"dst_static_token"`
 	InstanceId            string     `yaml:"instance_id"`
 	MultipleInstancesMode bool       `yaml:"multiple_instances_mode"`
