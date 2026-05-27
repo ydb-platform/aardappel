@@ -8,6 +8,8 @@ src_client_balancer: false
 ##   src_oauth2_file - path to the oauth2 file
 ##   src_static_token - YDB static token
 src_oauth2_file: "/opt/aardappel/secrets/src-sa/key.json"
+## OAuth2 token exchange endpoint for dst credentials, overrides token-endpoint from src_oauth2_file when set.
+src_oauth2_endpoint: "https://tokens.svc.cluster.local:443/oauth2/token/exchange"
 
 ## Connection string to the destination cluster: grpcs://<ENDPOINT>/<DATABASE>
 dst_connection_string: "grpcs://shared-1-grpc.ydb-global.svc.cluster.local:2135/testing-global/aardappel-test"
@@ -19,6 +21,8 @@ dst_client_balancer: false
 ##   dst_oauth2_file - path to the oauth2 file
 ##   dst_static_token - YDB static token
 dst_oauth2_file: "/opt/aardappel/secrets/dst-sa/key.json"
+## OAuth2 token exchange endpoint for dst credentials, overrides token-endpoint from dst_oauth2_file when set.
+dst_oauth2_endpoint: "https://tokens.svc.cluster.local:443/oauth2/token/exchange"
 
 ## The table name to save replication state in the destination database
 ## the table will be created in the destination database if absent.

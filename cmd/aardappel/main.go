@@ -1,6 +1,7 @@
 package main
 
 import (
+	"aardappel/internal/auth"
 	configInit "aardappel/internal/config"
 	"aardappel/internal/dst_table"
 	"aardappel/internal/hb_tracker"
@@ -35,25 +36,6 @@ import (
 )
 
 const defaultLockCheckInterval = 5 * time.Second
-
-func createYdbDriverAuthOptions(oauthFile string, staticToken string) ([]ydb.Option, error) {
-	if (len(oauthFile) > 0 && len(staticToken) > 0) || (len(oauthFile) == 0 && len(staticToken) == 0) {
-		return nil, errors.New("it's either oauth2_file or static_token option must be set")
-	}
-
-	if len(oauthFile) > 0 {
-		return []ydb.Option{
-			ydb.WithOauth2TokenExchangeCredentialsFile(oauthFile),
-		}, nil
-	}
-
-	if len(staticToken) > 0 {
-		return []ydb.Option{
-			ydb.WithAccessTokenCredentials(staticToken),
-		}, nil
-	}
-	return nil, errors.New("not supported")
-}
 
 func GetLockerRequestBuilder(tableName string) *ydb_locker.LockRequestBuilderImpl {
 	return &ydb_locker.LockRequestBuilderImpl{
@@ -341,13 +323,21 @@ func main() {
 		defer mon.Stop()
 	}
 
-	srcOpts, err := createYdbDriverAuthOptions(config.SrcOAuthFile, config.SrcStaticToken)
+	srcOpts, err := auth.CreateYdbDriverAuthOptions(auth.AuthConfig{
+		CredentialsFile:   config.SrcOAuthFile,
+		StaticToken:       config.SrcStaticToken,
+		ExchangerEndpoint: config.SrcOAuthEndpoint,
+	})
 	if err != nil {
 		xlog.Fatal(ctx, "Unable to create auth option for src",
 			zap.Error(err))
 	}
 
-	dstOpts, err := createYdbDriverAuthOptions(config.DstOAuthFile, config.DstStaticToken)
+	dstOpts, err := auth.CreateYdbDriverAuthOptions(auth.AuthConfig{
+		CredentialsFile:   config.DstOAuthFile,
+		StaticToken:       config.DstStaticToken,
+		ExchangerEndpoint: config.DstOAuthEndpoint,
+	})
 	if err != nil {
 		xlog.Fatal(ctx, "Unable to create auth option for dst",
 			zap.Error(err))
