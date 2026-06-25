@@ -390,8 +390,15 @@ func (processor *Processor) EnqueueHb(ctx context.Context, hb types.HbData) erro
 				"enqueued just during our commit",
 				zap.Uint64("step", hb.Step),
 				zap.Uint64("tx_id", hb.TxId),
+				zap.Uint32("reader_id", hb.StreamId.ReaderId),
+				zap.Int64("partition_id", hb.StreamId.PartitionId),
 				zap.Uint64("our_step", lastPosition.Step),
 				zap.Uint64("our_tx_id", lastPosition.TxId))
+			err := hb.CommitTopic()
+			if err != nil {
+				errMsg := fmt.Sprintf("EnqueueHb: Unable to commit topic")
+				return types.ReturnError(ctx, err, errMsg)
+			}
 			return nil
 		}
 		return processor.hbTracker.AddHb(ctx, hb)
