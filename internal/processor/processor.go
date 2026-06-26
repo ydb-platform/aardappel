@@ -452,7 +452,11 @@ func (processor *Processor) EnqueueTx(ctx context.Context, tx types.TxData) erro
 				zap.Uint64("tx_id", tx.TxId),
 				zap.Uint64("our_step", lastPosition.Step),
 				zap.Uint64("our_tx_id", lastPosition.TxId))
-			return nil
+			err := tx.CommitTopic()
+			if err != nil {
+				errMsg := fmt.Sprintf("EnqueueTx: Unable to commit topic")
+				return types.ReturnError(ctx, err, errMsg)
+			}
 		}
 		processor.txQueue.PushTx(tx)
 		return nil
