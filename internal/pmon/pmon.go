@@ -1,18 +1,21 @@
 package pmon
 
 import (
-	"aardappel/internal/config"
-	"aardappel/internal/util/misc"
-	"aardappel/internal/util/xlog"
 	"context"
 	"errors"
-	"github.com/prometheus/client_golang/prometheus"
-	"github.com/prometheus/client_golang/prometheus/promhttp"
-	"go.uber.org/zap"
 	"net/http"
 	"sync"
 	"sync/atomic"
 	"time"
+
+	"aardappel/internal/config"
+	"aardappel/internal/util/misc"
+	"aardappel/internal/util/xlog"
+
+	"github.com/prometheus/client_golang/prometheus"
+	"github.com/prometheus/client_golang/prometheus/collectors"
+	"github.com/prometheus/client_golang/prometheus/promhttp"
+	"go.uber.org/zap"
 )
 
 type Metrics interface {
@@ -141,6 +144,14 @@ func (h *khzHandler) ServeHTTP(writer http.ResponseWriter, req *http.Request) {
 
 func NewPromMon(ctx context.Context, config *config.MonServer) *PromMon {
 	reg := prometheus.NewRegistry()
+
+	reg.MustRegister(
+		collectors.NewGoCollector(
+			collectors.WithGoCollectorRuntimeMetrics(
+				collectors.MetricsAll,
+			),
+		),
+	)
 
 	p := NewMetrics(reg)
 	p.perTableCounters = make(map[string]*MonPerTable)
