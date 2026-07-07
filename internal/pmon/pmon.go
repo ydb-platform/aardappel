@@ -8,6 +8,7 @@ import (
 	"errors"
 	"github.com/prometheus/client_golang/prometheus"
 	"github.com/prometheus/client_golang/prometheus/promhttp"
+	"github.com/prometheus/client_golang/prometheus/collectors"
 	"go.uber.org/zap"
 	"net/http"
 	"sync"
@@ -141,6 +142,14 @@ func (h *khzHandler) ServeHTTP(writer http.ResponseWriter, req *http.Request) {
 
 func NewPromMon(ctx context.Context, config *config.MonServer) *PromMon {
 	reg := prometheus.NewRegistry()
+
+	reg.MustRegister(
+		collectors.NewGoCollector(
+			collectors.WithGoCollectorRuntimeMetrics(
+				collectors.MetricsAll,
+			),
+		),
+	)
 
 	p := NewMetrics(reg)
 	p.perTableCounters = make(map[string]*MonPerTable)
