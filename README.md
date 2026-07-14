@@ -418,105 +418,133 @@ new source table must be replicated consistently with existing tables. It joins
 the same heartbeat quorum, and its changes are applied in the same destination
 transaction as changes from other streams.
 
-All streams for an `instance_id` share one checkpoint. Do not create a new CDC far
-in advance and later add it to a running configuration: while it is absent from
-the quorum, existing streams may advance the checkpoint beyond its initial-scan
-timestamp. Those messages would then be considered old and committed without
-application after restart.
+The main task when adding a stream is to **align its position with the existing
+replication**. There are two independent position layers:
 
-Safe procedure for a non-empty new table:
+- `step_id` and `tx_id` in `state_table` form one global virtual timestamp for all
+  streams of the instance. Aardappel uses it to filter out messages that it
+  considers already processed;
+- each CDC consumer stores committed offsets separately for every topic partition.
+  These offsets determine where physical reading of each stream resumes.
+
+Resetting the global timestamp in `state_table` does not roll back the consumers.
+Existing streams therefore continue from their committed offsets and read only new
+messages, while the new consumer starts from its own offset, normally from the
+beginning. The streams eventually reach a common heartbeat quorum and continue in
+the normal consistent mode.
+
+Choose the migration procedure according to the state and size of the new stream:
 
 ```mermaid
 flowchart TD
-    A[Stop all active/standby processes<br/>for this instance_id] --> B[Create a compatible<br/>destination table]
-    B --> C[Create CDC with<br/>INITIAL_SCAN = TRUE]
-    C --> D[Create a dedicated consumer]
-    D --> E[Add src_topic → dst_table<br/>to streams]
-    E --> F[Start Aardappel with the same<br/>state_table and instance_id]
-    F --> G[New stream partitions join quorum;<br/>initial scan and new changes replicate]
+    A[Add a new stream] --> B{Is the source table empty?}
+    B -->|yes| C[Add the stream to config<br/>and restart Aardappel]
+    B -->|no| D{Does its history fit<br/>into one transaction?}
+    D -->|yes| E[Stop replication<br/>add stream<br/>reset timestamp to 0]
+    D -->|no| F[Stop replication<br/>add stream<br/>reset timestamp to 0<br/>set INITIAL_SCAN]
+    E --> G[Start and wait for streams<br/>to align at a common quorum]
+    F --> H[Aardappel applies initial scan in batches<br/>and switches automatically to RUN]
 ```
 
-1. Stop the active process and every standby with the same `instance_id`. Verify
-   that the old process no longer advances the checkpoint.
-2. Create the new destination table with keys and columns compatible with the new
-   source messages.
-3. While Aardappel is stopped, create the new source changefeed with virtual and
-   resolved timestamps and `INITIAL_SCAN = TRUE`.
-4. Create a consumer for the new changefeed.
-5. Add the new pair to `streams`. Its position is irrelevant if existing
-   `src_topic → dst_table` pairs remain unchanged:
+### Scenario 1: a new empty table and a light stream
 
-   ```yaml
-   streams:
-     - src_topic: "/Root/orders/orders_cdc"
-       consumer: "aardappel"
-       dst_table: "/Root/orders_replica"
-     - src_topic: "/Root/customers/customers_cdc"
-       consumer: "aardappel"
-       dst_table: "/Root/customers_replica"
+If the source table is new and empty and the stream has no history to replay:
+
+1. Create the compatible destination table, CDC, and consumer.
+2. Add the `src_topic → dst_table` pair to `streams`.
+3. Restart Aardappel so that it reloads the configuration and destination schema.
+4. Check that the new stream starts producing heartbeats and joins the common
+   quorum.
+
+No `state_table` change is required in this case. The CDC and consumer must be
+created before writes to the new source table begin.
+
+### Scenario 2: a non-empty stream that fits into one transaction
+
+Use this procedure when the new table and CDC already contain data, but the entire
+history before the first common quorum is small enough for one destination
+transaction:
+
+1. Stop the active process and every standby process with the same `instance_id`.
+2. Back up the current state row and record committed offsets for every consumer
+   partition.
+3. Add the new stream to the configuration.
+4. Reset the global timestamp for this instance to `(0, 0)` so that Aardappel does
+   not filter the new stream's historical messages using the old checkpoint:
+
+   ```sql
+   UPDATE `<state_table>`
+   SET step_id = 0, tx_id = 0
+   WHERE id = "<instance_id>";
    ```
 
-6. Start Aardappel with the existing `state_table` and `instance_id`. No new state
-   row is needed: the initial-scan timestamp created after stopping is newer than
-   the stored checkpoint.
-7. Check the new stream heartbeat, replication lag, logs, and destination data.
+5. Start Aardappel.
 
-### Large initial scan
+The existing consumers retain their committed offsets, so the old streams read
+only messages that appeared after their last commits. The new consumer reads its
+stream from the beginning and applies its history. At some point all streams align
+at a common heartbeat quorum, after which replication continues normally.
 
-In `RUN`, all accumulated changes before the next quorum are formed into one
-destination request. A large initial scan may exceed transaction size or execution
-time limits. Include a size estimate in the migration plan and, if necessary,
-switch the current state row back to `INITIAL_SCAN` while Aardappel is stopped:
+### Scenario 3: a large stream created with initial scan
 
-```sql
-UPDATE `<state_table>`
-SET stage = "INITIAL_SCAN"
-WHERE id = "<instance_id>";
-```
+Use this procedure when the new CDC contains an initial scan that is too large for
+one destination request or transaction:
 
-In `INITIAL_SCAN`, `Processor` applies batches of no more than 1000 CDC messages
-and automatically stores `stage = "RUN"` at the new synchronized heartbeat
-boundary. This affects the entire replication instance, not only the added stream,
-and must be done only while all active/standby processes are stopped. Back up the
-current row first and ensure that `state = "OK"` and its checkpoint matches actual
-destination data.
+1. Stop the active process and every standby process with the same `instance_id`.
+2. Back up the current state row and record committed offsets for every consumer
+   partition.
+3. Add the new stream to the configuration.
+4. Reset the global timestamp to `(0, 0)` and switch the instance to
+   `INITIAL_SCAN`:
 
-### Aligning the checkpoint and consumer offsets
+   ```sql
+   UPDATE `<state_table>`
+   SET step_id = 0,
+       tx_id = 0,
+       stage = "INITIAL_SCAN"
+   WHERE id = "<instance_id>";
+   ```
 
-There are two different position layers:
+5. Start Aardappel.
 
-- `step_id` and `tx_id` in `state_table`: one common virtual timestamp for all
-  instance streams, used by Aardappel to discard processed messages;
-- CDC consumer offset: a separate physical read position for every topic
-  partition, used by YDB to decide which messages to return.
+In `INITIAL_SCAN`, `Processor` applies changes in batches of no more than 1000 CDC
+messages. Once it reaches a synchronized heartbeat quorum, it stores the new global
+position, switches `stage` to `RUN` automatically, and resumes normal replication.
+The existing streams continue from their committed consumer offsets; the new
+stream reads and applies its initial-scan history and catches up with them.
 
-Alignment may use a manual state-table checkpoint change and/or partition consumer
-offset changes. For example, if the new table was already replicated completely by
-a separate Aardappel instance, set the combined replication consumer to the
-confirmed cutover offsets so that it does not reread and reapply the initial scan.
-The common `(step_id, tx_id)` must represent the same consistent data point in all
-destination tables.
+### Alternative: preliminary replication through a separate instance
 
-This is a manual migration with data-loss and duplicate-application risks. Perform
-it only with stopped readers, record offsets **for every partition**, and verify
-that destination contains every change before the chosen boundary. Advancing a
-consumer skips messages without consulting `state_table`; advancing the checkpoint
-causes Aardappel to commit older messages without applying them.
+For a large table, the new stream can first be replicated through a temporary,
+separate Aardappel instance:
 
-### Transition period
+1. Create a separate `instance_id`, state row, and consumer for the new stream.
+2. Replicate the new table until the temporary instance catches up.
+3. Stop both the main and temporary replication instances.
+4. Add the new stream to the main configuration and perform the alignment from
+   Scenario 2: reset the main global timestamp to `(0, 0)` and start the main
+   instance.
+5. Reuse or align the consumer offset at the confirmed cutover point so that the
+   main instance continues from the data already applied by the temporary
+   replication.
+6. After checking the common quorum, lag, and destination data, remove the
+   temporary replication instance.
 
-During initial scan or catch-up, the new destination table is only partially
-populated. The destination table set may therefore be logically inconsistent for
-some time, although every individual batch is atomic. Consumers should avoid the
-new table until alignment finishes or explicitly support this transitional state.
-Confirm completion through heartbeat/quorum, replication lag, and an
-application-level data comparison.
+Never let the temporary and main instances read the same consumer concurrently.
 
-For a source table guaranteed to be empty, `INITIAL_SCAN` may be omitted, but the
-changefeed and consumer must still exist before writes begin. If stopping existing
-replication is impossible, do not attach a stream directly to the old checkpoint:
-use a separate `instance_id` and replication group or design a dedicated alignment
-plan.
+### Transition period and safety
+
+During catch-up or batched initial-scan processing, the newly added destination
+table may be only partially populated. The complete set of destination tables may
+therefore remain logically inconsistent for some time, even though every
+individual batch is applied atomically. Consumers should avoid using the new table
+until alignment completes or explicitly support this transitional state.
+
+Manual changes to `state_table` and consumer offsets carry data-loss and duplicate
+application risks. Perform them only while all relevant readers are stopped. Keep
+a copy of the original state and offsets, verify that `state = "OK"`, and confirm
+completion using heartbeat/quorum, replication lag, logs, and an application-level
+data comparison.
 
 > **Do not concurrently use one consumer of one CDC topic from independent
 > Aardappel instances.** YDB distributes partitions between read sessions: one
@@ -561,7 +589,10 @@ flowchart TD
     C -->|no| P
     P -->|continue| D[Write details to DLQ<br/>if configured]
     D --> S
-    P -->|stop| E[Store FATAL_ERROR<br/>and stop]
+    P -->|stop| E[Store FATAL_ERROR]
+    E --> SD[Write problem to DLQ<br/>if configured]
+    SD --> R[Read until the next heartbeat;<br/>write other out-of-order<br/>transactions to DLQ]
+    R --> X[Stop the process]
 ```
 
 A `cmd_queue` command looks like this:
@@ -580,7 +611,11 @@ Valid actions are `skip` and `apply`. The spelling `aardapel_instance_id` is
 intentional because that is what the current JSON parser expects.
 
 `dead_letter_queue` receives a textual diagnostic for events that were skipped or
-stopped replication. It is not an automatic replay source.
+stopped replication. With the `stop` strategy, Aardappel writes the original
+problem to DLQ, then reads the stream up to the next heartbeat and writes any other
+out-of-order transactions found in that interval. These messages are written only
+when DLQ is configured. The problem message is not committed by this path; after
+collecting diagnostics, the process stops. DLQ is not an automatic replay source.
 
 ## Key filtering
 
@@ -666,9 +701,8 @@ context and releasing the lock.
 - Run Aardappel in the same network or location as destination YDB. Topic reading
   naturally tolerates source-side delay, while destination transactions use a
   5-second timeout and are not designed for long or unstable cross-region latency.
-- Do not commit static tokens or credential JSON to configuration, logs, or Git.
 - For `FATAL_ERROR`, inspect `last_msg` and DLQ first. Changing state to `OK`
-  without fixing the cause may violate expected data semantics.
+  without fixing the cause doesn't resolve the problem.
 
 ---
 
@@ -1096,109 +1130,133 @@ consumer/state или предварительное выравнивание д
 изменения будут применяться в одной destination-транзакции с изменениями остальных
 streams.
 
-Все streams одного `instance_id` используют общий checkpoint. Поэтому новый CDC
-нельзя просто создать заранее и позже добавить в работающую конфигурацию: пока
-новый stream не участвует в quorum, checkpoint существующих streams может стать
-больше timestamp его initial scan. После рестарта такие сообщения будут считаться
-старыми и будут подтверждены без применения.
+Главная задача при добавлении stream — **выровнять его позицию с уже работающей
+репликацией**. При этом существуют два независимых уровня позиции:
 
-Безопасная последовательность для непустой новой таблицы:
+- `step_id` и `tx_id` в `state_table` образуют один глобальный virtual timestamp
+  всех streams экземпляра. По нему Aardappel фильтрует сообщения, которые считает
+  уже обработанными;
+- каждый CDC consumer отдельно хранит committed offsets всех партиций топика. Они
+  определяют, с какого физического сообщения продолжится чтение каждого stream.
+
+Сброс глобального timestamp в `state_table` не откатывает offsets consumers.
+Поэтому существующие streams продолжат чтение со своих committed offsets и получат
+только новые сообщения, а новый consumer начнёт со своей позиции — обычно с начала
+CDC. Через некоторое время streams достигнут общего heartbeat quorum и продолжат
+работу в обычном консистентном режиме.
+
+Процедура зависит от состояния и размера нового stream:
 
 ```mermaid
 flowchart TD
-    A[Остановить все active/standby<br/>с этим instance_id] --> B[Создать совместимую<br/>destination-таблицу]
-    B --> C[Создать CDC с<br/>INITIAL_SCAN = TRUE]
-    C --> D[Создать отдельный consumer]
-    D --> E[Добавить пару src_topic → dst_table<br/>в streams]
-    E --> F[Запустить Aardappel<br/>с прежними state_table и instance_id]
-    F --> G[Партиции нового stream входят в quorum;<br/>initial scan и новые изменения реплицируются]
+    A[Добавить новый stream] --> B{Source-таблица пустая?}
+    B -->|да| C[Добавить stream в конфиг<br/>и перезапустить Aardappel]
+    B -->|нет| D{История помещается<br/>в одну транзакцию?}
+    D -->|да| E[Остановить репликацию<br/>добавить stream<br/>сбросить timestamp в 0]
+    D -->|нет| F[Остановить репликацию<br/>добавить stream<br/>сбросить timestamp в 0<br/>включить INITIAL_SCAN]
+    E --> G[Запустить и дождаться<br/>общего quorum]
+    F --> H[Aardappel сам применяет initial scan batches<br/>и автоматически переходит в RUN]
 ```
 
-1. Остановите активный процесс и все standby-экземпляры с тем же `instance_id`.
-   Убедитесь, что старый процесс больше не продвигает общий checkpoint.
-2. Создайте новую destination-таблицу с ключом и колонками, совместимыми с
-   сообщениями новой source-таблицы.
-3. Пока Aardappel остановлен, создайте changefeed новой source-таблицы с
-   `VIRTUAL_TIMESTAMPS`, resolved timestamps и `INITIAL_SCAN = TRUE`.
-4. Создайте consumer для нового changefeed.
-5. Добавьте новую пару в `streams`. Позиция элемента в списке не важна, если пары
-   `src_topic → dst_table` остальных streams не изменились:
+### Сценарий 1: новая пустая таблица и лёгкий stream
 
-   ```yaml
-   streams:
-     - src_topic: "/Root/orders/orders_cdc"
-       consumer: "aardappel"
-       dst_table: "/Root/orders_replica"
-     - src_topic: "/Root/customers/customers_cdc"
-       consumer: "aardappel"
-       dst_table: "/Root/customers_replica"
+Если source-таблица новая и пустая, а в stream нет истории для применения:
+
+1. Создайте совместимую destination-таблицу, CDC и consumer.
+2. Добавьте пару `src_topic → dst_table` в `streams`.
+3. Перезапустите Aardappel, чтобы он перечитал конфигурацию и схему destination.
+4. Проверьте, что новый stream начал присылать heartbeat и вошёл в общий quorum.
+
+Менять `state_table` в этом сценарии не требуется. CDC и consumer должны быть
+созданы до начала записи данных в новую source-таблицу.
+
+### Сценарий 2: непустой stream, помещающийся в одну транзакцию
+
+Этот вариант подходит, если новая таблица и CDC уже содержат данные, но вся история
+до первого общего quorum достаточно мала для одной destination-транзакции:
+
+1. Остановите активный процесс и все standby-процессы с тем же `instance_id`.
+2. Сохраните текущую строку state и committed offsets всех партиций consumers.
+3. Добавьте новый stream в конфигурацию.
+4. Сбросьте глобальный timestamp экземпляра в `(0, 0)`, чтобы Aardappel не
+   отфильтровал исторические сообщения нового stream по старому checkpoint:
+
+   ```sql
+   UPDATE `<state_table>`
+   SET step_id = 0, tx_id = 0
+   WHERE id = "<instance_id>";
    ```
 
-6. Запустите Aardappel с прежними `state_table` и `instance_id`. Создавать новую
-   строку состояния не нужно: timestamp initial scan, созданного после остановки,
-   будет новее сохранённого checkpoint.
-7. Проверьте heartbeat нового stream, replication lag, логи и наполнение новой
-   destination-таблицы.
+5. Запустите Aardappel.
 
-### Большой initial scan
+Существующие consumers сохранят свои committed offsets, поэтому старые streams
+будут читать только сообщения, появившиеся после последних commit. Новый consumer
+прочитает свой stream с начала и применит его историю. В некоторый момент все
+streams выровняются на общем heartbeat quorum, после чего репликация продолжится в
+обычном режиме.
 
-В стадии `RUN` все накопленные изменения до очередного quorum формируются в один
-destination-запрос. Если initial scan новой таблицы велик, такой batch может не
-поместиться в одну транзакцию по объёму или времени выполнения. В план миграции
-нужно включить оценку размера initial scan и при необходимости, пока Aardappel
-остановлен, переключить строку текущего `instance_id` обратно в стадию
-`INITIAL_SCAN`:
+### Сценарий 3: большой stream с initial scan
 
-```sql
-UPDATE `<state_table>`
-SET stage = "INITIAL_SCAN"
-WHERE id = "<instance_id>";
-```
+Этот вариант нужен, если новый CDC содержит initial scan, который не помещается в
+один destination-запрос или транзакцию:
 
-В `INITIAL_SCAN` Processor применяет изменения batches не более 1000 CDC-сообщений,
-после чего на новой синхронной heartbeat-границе сам сохраняет `stage = "RUN"`.
-Переключение затрагивает весь экземпляр репликации, а не только добавленный stream,
-и должно выполняться только при остановленных active/standby-процессах. Перед
-ручным изменением state table сохраните её текущую строку и убедитесь, что
-`state = "OK"` и checkpoint соответствует фактическим данным destination.
+1. Остановите активный процесс и все standby-процессы с тем же `instance_id`.
+2. Сохраните текущую строку state и committed offsets всех партиций consumers.
+3. Добавьте новый stream в конфигурацию.
+4. Сбросьте глобальный timestamp в `(0, 0)` и переключите экземпляр в
+   `INITIAL_SCAN`:
 
-### Выравнивание checkpoint и consumer offsets
+   ```sql
+   UPDATE `<state_table>`
+   SET step_id = 0,
+       tx_id = 0,
+       stage = "INITIAL_SCAN"
+   WHERE id = "<instance_id>";
+   ```
 
-При подготовке stream различайте два вида позиции:
+5. Запустите Aardappel.
 
-- `step_id` и `tx_id` в `state_table` — общий virtual timestamp всех streams
-  экземпляра; по нему Aardappel отбрасывает уже обработанные сообщения;
-- offset consumer в CDC-топике — отдельная позиция чтения каждой партиции; по ней
-  YDB определяет, какие физические сообщения отдавать reader.
+В `INITIAL_SCAN` Processor применяет изменения batches не более 1000 CDC-сообщений.
+Достигнув синхронизированного heartbeat quorum, он сохранит новую глобальную
+позицию, автоматически переключит `stage` в `RUN` и продолжит обычную репликацию.
+Существующие streams продолжат чтение со своих committed consumer offsets, а новый
+stream прочитает и применит initial-scan историю и догонит их.
 
-Выравнивание можно выполнить ручным изменением checkpoint в `state_table` и/или
-партиционных offsets consumer. Например, если новая таблица уже была полностью
-реплицирована отдельным экземпляром Aardappel, consumer объединённого контура можно
-установить на подтверждённые offsets точки переключения, чтобы не читать initial
-scan с начала и не применять его повторно. Общий `(step_id, tx_id)` при этом должен
-соответствовать той же согласованной точке данных во всех destination-таблицах.
+### Альтернатива: предварительная репликация отдельным экземпляром
 
-Это ручная миграция с риском потери или повторного применения данных. Выполняйте её
-только при остановленных readers, фиксируйте offsets **для каждой партиции** и
-сначала проверяйте, что destination действительно содержит все изменения до
-выбранной границы. Сдвиг consumer вперёд пропускает сообщения без проверки
-`state_table`, а сдвиг checkpoint вперёд заставляет Aardappel подтверждать более
-старые сообщения без применения.
+Большую новую таблицу можно сначала реплицировать временным отдельным экземпляром
+Aardappel:
 
-### Переходный период
+1. Создайте для нового stream отдельные `instance_id`, строку state и consumer.
+2. Реплицируйте новую таблицу до тех пор, пока временный экземпляр не догонит
+   source.
+3. Остановите основной и временный экземпляры репликации.
+4. Добавьте новый stream в основную конфигурацию и выполните выравнивание из
+   сценария 2: сбросьте глобальный timestamp основного экземпляра в `(0, 0)` и
+   запустите его.
+5. Переиспользуйте либо выровняйте consumer offset по подтверждённой точке
+   переключения, чтобы основной экземпляр продолжил с данных, уже применённых
+   временной репликацией.
+6. После проверки общего quorum, lag и destination-данных удалите временную
+   репликацию.
 
-Во время initial scan или догоняющей репликации новая destination-таблица заполнена
-лишь частично. Поэтому некоторое время весь набор destination-таблиц может быть
-логически неконсистентным, хотя каждый отдельный batch применяется атомарно.
-Потребители должны либо не использовать новую таблицу до завершения выравнивания,
-либо явно поддерживать это переходное состояние. Окончание миграции следует
-подтвердить по heartbeat/quorum, replication lag и прикладной сверке данных.
+Нельзя допускать, чтобы временный и основной экземпляры одновременно читали один
+consumer.
 
-Если новая source-таблица гарантированно пустая, `INITIAL_SCAN` можно не включать.
-В этом случае changefeed и consumer всё равно нужно создать до начала записи в
-таблицу. Если остановка существующей репликации невозможна, не добавляйте stream к
-старому checkpoint напрямую: используйте отдельный `instance_id` и отдельный
-контур репликации либо подготовьте специальный план выравнивания данных.
+### Переходный период и безопасность
+
+Во время догоняющей репликации или batch-применения initial scan новая
+destination-таблица может быть заполнена только частично. Поэтому некоторое время
+весь набор destination-таблиц может быть логически неконсистентным, хотя каждый
+отдельный batch применяется атомарно. Потребители не должны использовать новую
+таблицу до завершения выравнивания либо должны явно поддерживать переходное
+состояние.
+
+Ручное изменение `state_table` и consumer offsets связано с риском потери или
+повторного применения данных. Выполняйте его только при остановленных readers.
+Сохраните исходные state и offsets, убедитесь, что `state = "OK"`, а завершение
+выравнивания подтвердите по heartbeat/quorum, replication lag, логам и прикладной
+сверке данных.
 
 > **Нельзя одновременно использовать одного consumer одного CDC-топика в разных
 > независимо работающих экземплярах Aardappel.** YDB распределит партиции между
@@ -1245,7 +1303,10 @@ flowchart TD
     C -->|нет| P
     P -->|continue| D[Записать описание в DLQ,<br/>если она настроена]
     D --> S
-    P -->|stop| E[Сохранить FATAL_ERROR<br/>и остановить процесс]
+    P -->|stop| E[Сохранить FATAL_ERROR]
+    E --> SD[Записать проблему в DLQ,<br/>если она настроена]
+    SD --> R[Дочитать до следующего heartbeat;<br/>записать остальные out-of-order<br/>транзакции в DLQ]
+    R --> X[Остановить процесс]
 ```
 
 Команда в `cmd_queue` имеет вид:
@@ -1264,7 +1325,11 @@ flowchart TD
 приведено с тем же написанием, которое ожидает текущий JSON parser.
 
 `dead_letter_queue` получает текстовое описание ошибки и помогает разбирать
-пропущенные или остановившие репликацию события. DLQ не является источником
+пропущенные или остановившие репликацию события. При стратегии `stop` Aardappel
+записывает в DLQ исходную проблему, затем дочитывает stream до следующего heartbeat
+и записывает найденные на этом интервале out-of-order транзакции. Запись выполняется
+только при настроенной DLQ. Проблемное сообщение в этой ветке не подтверждается;
+после сбора диагностики процесс останавливается. DLQ не является источником
 автоматического replay.
 
 ## Фильтрация ключей
@@ -1354,6 +1419,5 @@ context и освобождая lock.
   YDB. Topic-reading естественным образом допускает задержки со стороны source, а
   транзакционные запросы к destination выполняются с timeout 5 секунд и не
   рассчитаны на длительные или нестабильные межрегиональные сетевые задержки.
-- Не публикуйте static tokens и credentials JSON в конфигурации, логах или Git.
 - При `FATAL_ERROR` сначала исследуйте `last_msg` и DLQ; простая смена state на
-  `OK` без решения причины может нарушить ожидаемую семантику данных.
+  `OK` без решения причины не решает проблему.
