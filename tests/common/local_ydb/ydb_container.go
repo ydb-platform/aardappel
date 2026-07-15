@@ -45,7 +45,6 @@ func createContainerRequest(containerSettings ContainerSettings) testcontainers.
 	env := map[string]string{
 		"GRPC_PORT":             grpcPort,
 		"YDB_DEFAULT_LOG_LEVEL": "NOTICE",
-		"YDB_FEATURE_FLAGS":     "enable_implicit_query_parameter_types",
 	}
 	request := testcontainers.ContainerRequest{
 		Image:        containerSettings.YdbImage,
