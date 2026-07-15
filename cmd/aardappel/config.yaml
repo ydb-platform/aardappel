@@ -8,7 +8,7 @@ src_client_balancer: false
 ##   src_oauth2_file - path to the oauth2 file
 ##   src_static_token - YDB static token
 src_oauth2_file: "/opt/aardappel/secrets/src-sa/key.json"
-## OAuth2 token exchange endpoint for dst credentials, overrides token-endpoint from src_oauth2_file when set.
+## OAuth2 token exchange endpoint for src credentials, overrides token-endpoint from src_oauth2_file when set.
 src_oauth2_endpoint: "https://tokens.svc.cluster.local:443/oauth2/token/exchange"
 
 ## Connection string to the destination cluster: grpcs://<ENDPOINT>/<DATABASE>
@@ -54,7 +54,7 @@ max_expected_heartbeat_interval: 10
 log_level: "debug"
 
 ## Command topic. In this topic you may post events to suggest aardappel what to do if it stops because cannot process some changes consistently
-cmd_topic:
+cmd_queue:
   path: aardappel_command
   consumer: c1
 
