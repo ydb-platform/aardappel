@@ -76,7 +76,7 @@ func DoReplication(ctx context.Context, prc *processor.Processor, dstTables []*d
 			mon.ModificationCountFromTopic(stats.PerTableStats[i].ModificationsCount, monTag)
 		}
 	}
-	xlog.Info(ctx, "Replication step ok", zap.Int("modifications", stats.ModificationsCount),
+	xlog.Debug(ctx, "Replication step ok", zap.Int("modifications", stats.ModificationsCount),
 		zap.Float32("mps", perSecond),
 		zap.Uint64("last quorum HB step", stats.LastHeartBeat.Step),
 		zap.Uint64("last quorum HB tx_id", stats.LastHeartBeat.TxId),
