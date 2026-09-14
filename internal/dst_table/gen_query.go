@@ -142,6 +142,24 @@ func ConvertToYDBValue(v json.RawMessage, t ydb_types.Type) (ydb_types.Value, er
 		return ydb_types.OptionalValue(v), nil
 	}
 
+	// Decimal is a parametrized type (Decimal(precision, scale)), so it never
+	// matches a constant case in the switch below. Read precision/scale from the
+	// YDB type descriptor, the same source the SDK uses internally. The
+	// changefeed emits the value as a JSON string to keep full precision (a bare
+	// JSON number is float64 and would round Decimal(22,9)); tolerate a bare
+	// number regardless.
+	if dec := t.ToYDB().GetDecimalType(); dec != nil {
+		var str string
+		if err = json.Unmarshal(v, &str); err != nil {
+			str = string(v)
+		}
+		value, err := ydb_types.DecimalValueFromString(str, dec.GetPrecision(), dec.GetScale())
+		if err != nil {
+			return nil, fmt.Errorf("ConvertToYDBValue: decimal from string %q: %w", str, err)
+		}
+		return value, nil
+	}
+
 	switch t {
 	case ydb_types.TypeBool:
 		var value bool
