@@ -116,12 +116,12 @@ func NewYDBDir() (*YDBDir, error) {
 	}
 	log.Println(fmt.Sprintf("test dir: %s", dir))
 	certsDir := filepath.Join(dir, "ydb_certs")
-	err = os.Mkdir(certsDir, 777)
+	err = os.Mkdir(certsDir, 0777)
 	if err != nil {
 		return nil, fmt.Errorf("failed to create ydb-certs directory: %w", err)
 	}
 	dataDir := filepath.Join(dir, "ydb_data")
-	err = os.Mkdir(dataDir, 777)
+	err = os.Mkdir(dataDir, 0777)
 	if err != nil {
 		return nil, fmt.Errorf("failed to create ydb-data directory: %w", err)
 	}
