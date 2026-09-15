@@ -201,3 +201,32 @@ func TestGenQueryWithTimestamp(t *testing.T) {
 		"]"
 	assert.Equal(t, expectedParams, query.Params[0].Value().Yql())
 }
+
+func TestConvertToYDBValueDecimal(t *testing.T) {
+	dec := ydb_types.DecimalType(22, 9)
+
+	// Non-optional decimal delivered as a JSON string.
+	v, err := ConvertToYDBValue(json.RawMessage(`"10.5"`), dec)
+	if err != nil {
+		t.Fatalf("string decimal: %v", err)
+	}
+	if v == nil {
+		t.Fatal("string decimal: nil value")
+	}
+
+	// Optional decimal, non-null.
+	opt := ydb_types.Optional(dec)
+	if _, err := ConvertToYDBValue(json.RawMessage(`"-123.456789"`), opt); err != nil {
+		t.Fatalf("optional decimal: %v", err)
+	}
+
+	// Optional decimal, null.
+	if _, err := ConvertToYDBValue(json.RawMessage(`null`), opt); err != nil {
+		t.Fatalf("null decimal: %v", err)
+	}
+
+	// Bare JSON number tolerated.
+	if _, err := ConvertToYDBValue(json.RawMessage(`0.000000001`), dec); err != nil {
+		t.Fatalf("bare number decimal: %v", err)
+	}
+}
