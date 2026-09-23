@@ -17,13 +17,13 @@ func GetTestTableMetaInfo() TableMetaInfo {
 	result.Name = "path"
 	result.PrimaryKey = []string{"key1", "key2"}
 	result.Columns = map[string]options.Column{
-		"key1":   options.Column{"key1", ydb_types.TypeInt32, ""},
-		"key2":   options.Column{"key1", ydb_types.TypeString, ""},
-		"value1": options.Column{"value1", ydb_types.TypeString, ""},
-		"value2": options.Column{"value2", ydb_types.TypeUint64, ""},
-		"value3": options.Column{"value3", ydb_types.Optional(ydb_types.TypeDouble), ""},
-		"value4": options.Column{"value4", ydb_types.Optional(ydb_types.TypeString), ""},
-		"value5": options.Column{"value5", ydb_types.Optional(ydb_types.TypeTimestamp), ""},
+		"key1":   {Name: "key1", Type: ydb_types.TypeInt32},
+		"key2":   {Name: "key1", Type: ydb_types.TypeString},
+		"value1": {Name: "value1", Type: ydb_types.TypeString},
+		"value2": {Name: "value2", Type: ydb_types.TypeUint64},
+		"value3": {Name: "value3", Type: ydb_types.Optional(ydb_types.TypeDouble)},
+		"value4": {Name: "value4", Type: ydb_types.Optional(ydb_types.TypeString)},
+		"value5": {Name: "value5", Type: ydb_types.Optional(ydb_types.TypeTimestamp)},
 	}
 	return result
 }
