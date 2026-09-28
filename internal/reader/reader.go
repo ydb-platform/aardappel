@@ -143,9 +143,10 @@ func WriteAllProblemTxsUntilNextHb(ctx context.Context, streamInfo StreamInfo, r
 }
 
 func ReadTopic(ctx context.Context, streamInfo StreamInfo, reader *client.TopicReader, channel processor.Channel,
-	handler processor.ConflictHandler, updateOffsetCb UpdateOffsetFunc, dlQueue *processor.DLQueue, errChannel chan error) {
+	handler processor.ConflictHandler, updateOffsetCb UpdateOffsetFunc, dlQueue *processor.DLQueue, errChannel chan error, commitOffsetMode bool) {
 	var mu sync.Mutex
 	lastHb := make(map[int64]types.Position)
+	lastEnqueuedOffset := make(map[int64]int64)
 	// returns true - pass item, false - skip item
 	verifyStream := func(part int64, data types.TxData) bool {
 		if hb, ok := lastHb[part]; ok && (types.Position{data.Step, data.TxId}.LessThan(hb)) {
@@ -220,7 +221,26 @@ func ReadTopic(ctx context.Context, streamInfo StreamInfo, reader *client.TopicR
 			return
 		}
 
-		updateOffsetCb(msg.Offset, msg.PartitionID())
+		partitionID := msg.PartitionID()
+		var topicData TopicData
+		var topicOffset *types.TopicOffset
+		var commitTopic func() error
+		if commitOffsetMode {
+			startOffset := msg.Offset
+			if offset, ok := lastEnqueuedOffset[partitionID]; ok {
+				if msg.Offset <= offset {
+					continue
+				}
+				startOffset = offset + 1
+			}
+			topicOffset = &types.TopicOffset{
+				PartitionId: partitionID,
+				StartOffset: startOffset,
+				Offset:      msg.Offset,
+			}
+		} else {
+			updateOffsetCb(msg.Offset, partitionID)
+		}
 
 		jsonData, err := io.ReadAll(msg)
 		if err != nil {
@@ -228,22 +248,18 @@ func ReadTopic(ctx context.Context, streamInfo StreamInfo, reader *client.TopicR
 			return
 		}
 
-		var topicData TopicData
 		err = json.Unmarshal(jsonData, &topicData)
 		if err != nil {
 			xlog.Error(ctx, "Error parsing topic data", zap.Error(err))
 			return
 		}
-		if topicData.Update != nil || topicData.Erase != nil {
-			data, err := rd.ParseTxData(ctx, jsonData, streamInfo.Id)
-			if err != nil {
-				xlog.Error(ctx, "ParseTxData: Error parsing tx data", zap.Error(err))
-				return
-			}
-			rv := verifyStream(msg.PartitionID(), data)
-			data.CommitTopic = func() error {
+		isTx := topicData.Update != nil || topicData.Erase != nil
+		if !commitOffsetMode {
+			commitTopic = func() error {
 				if msg.Context().Err() != nil {
-					xlog.Info(ctx, fmt.Sprintf("message context is done, unable to commit: %d", msg.Offset))
+					if isTx {
+						xlog.Info(ctx, fmt.Sprintf("message context is done, unable to commit: %d", msg.Offset))
+					}
 					err := types.NewGraceful(fmt.Sprintf("message context is done, unable to commit: %v", msg.Context().Err()))
 					errChannel <- err
 					return err
@@ -253,8 +269,20 @@ func ReadTopic(ctx context.Context, streamInfo StreamInfo, reader *client.TopicR
 				mu.Unlock()
 				return ret
 			}
+		}
+		if isTx {
+			data, err := rd.ParseTxData(ctx, jsonData, streamInfo.Id)
+			if err != nil {
+				xlog.Error(ctx, "ParseTxData: Error parsing tx data", zap.Error(err))
+				return
+			}
+			rv := verifyStream(msg.PartitionID(), data)
+			data.CommitTopic = commitTopic
+			data.TopicOffset = topicOffset
 			if rv == true {
 				channel.EnqueueTx(ctx, data)
+			} else if commitOffsetMode {
+				channel.EnqueueProcessedOffset(ctx, streamInfo.Id, *topicOffset)
 			} else {
 				err := data.CommitTopic()
 				if err != nil {
@@ -271,22 +299,16 @@ func ReadTopic(ctx context.Context, streamInfo StreamInfo, reader *client.TopicR
 				return
 			}
 			lastHb[msg.PartitionID()] = *types.NewPosition(data)
-			data.CommitTopic = func() error {
-				if msg.Context().Err() != nil {
-					err := types.NewGraceful(fmt.Sprintf("message context is done, unable to commit: %v", msg.Context().Err()))
-					errChannel <- err
-					return err
-				}
-				mu.Lock()
-				ret := reader.Commit(msg.Context(), msg)
-				mu.Unlock()
-				return ret
-			}
+			data.CommitTopic = commitTopic
+			data.TopicOffset = topicOffset
 			channel.EnqueueHb(ctx, data)
 			// Update last hb for partition
 		} else {
 			xlog.Error(ctx, "Unknown format of topic message")
 			return
+		}
+		if commitOffsetMode {
+			lastEnqueuedOffset[partitionID] = msg.Offset
 		}
 	}
 }

@@ -41,6 +41,10 @@ type Ydb struct {
 	ydbInfo      YdbInfo
 }
 
+func (localYdb *Ydb) ConnectionString() string {
+	return fmt.Sprintf("grpc://%s%s", localYdb.ydbInfo.GrpcEndpoint, localYdb.ydbInfo.Database)
+}
+
 func NewYDB(ctx context.Context, ydbSettings YdbSettings) (*Ydb, error) {
 	if envEndpoint, ok := os.LookupEnv(localYdbEndpoint); ok {
 		if envDBName, ok := os.LookupEnv(dbName); ok {
