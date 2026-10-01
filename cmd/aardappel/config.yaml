@@ -37,7 +37,7 @@ multiple_instances_mode: false
 ## When disabled, Commit is called for each message individually.
 commit_offset_mode: false
 ## Maximum number of concurrent offset commit requests when commit_offset_mode is enabled.
-max_concurrent_offset_commits: 10
+max_concurrent_offset_commits: 1000
 
 ## Replica tables and cdc sources. Transactions will be applied consistently between those tables. Multiple tables can be specified.
 streams:
