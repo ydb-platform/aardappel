@@ -110,7 +110,7 @@ func InitConfig(ctx context.Context, confPath string) (Config, error) {
 			zap.Error(err))
 		return Config{}, fmt.Errorf("unable to read configuration file: %w", err)
 	}
-	config := Config{MaxConcurrentOffsetCommits: 10}
+	config := Config{MaxConcurrentOffsetCommits: 1000}
 	err = yaml.Unmarshal(confTxt, &config)
 	if err != nil {
 		xlog.Error(ctx, "Unable to parse configuration file",
