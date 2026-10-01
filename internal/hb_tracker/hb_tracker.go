@@ -126,8 +126,20 @@ func (ht *HeartBeatTracker) StartHbGuard(ctx context.Context, timeout uint32, me
 }
 
 func (ht *HeartBeatTracker) AddHb(ctx context.Context, data types.HbData) error {
+	_, err := ht.addHb(ctx, data, false)
+	return err
+}
+
+// AddHbWithoutCompletion returns the obsolete heartbeat for offset tracking instead of committing it.
+// The new scheme uses this separate path to preserve the legacy behavior.
+func (ht *HeartBeatTracker) AddHbWithoutCompletion(ctx context.Context, data types.HbData) (*types.HbData, error) {
+	return ht.addHb(ctx, data, true)
+}
+
+func (ht *HeartBeatTracker) addHb(ctx context.Context, data types.HbData, withoutCompletion bool) (*types.HbData, error) {
 	ht.lock.Lock()
 	defer ht.lock.Unlock()
+	var completed *types.HbData
 	hb, ok := ht.streams[data.StreamId]
 	if ok {
 		storedPos := *types.NewPosition(hb)
@@ -143,13 +155,16 @@ func (ht *HeartBeatTracker) AddHb(ctx context.Context, data types.HbData) error 
 				zap.Uint64("new_step", data.Step),
 				zap.Uint64("new_tx_id", data.TxId))
 
+			if withoutCompletion {
+				return &data, nil
+			}
 			err := data.CommitTopic()
 			if err != nil {
 				errMsg := fmt.Sprintf("AddHb: unable to commit HB %v, stepId: %d, txId: %d", err,
 					data.Step, data.TxId)
-				return types.ReturnError(ctx, err, errMsg)
+				return nil, types.ReturnError(ctx, err, errMsg)
 			}
-			return nil
+			return nil, nil
 
 		default:
 			logMsg := "AddHb: hb tracker received newer hb; will commit stored hb and replace it"
@@ -165,12 +180,16 @@ func (ht *HeartBeatTracker) AddHb(ctx context.Context, data types.HbData) error 
 				zap.Uint64("new_step", data.Step),
 				zap.Uint64("new_tx_id", data.TxId))
 
-			err := hb.CommitTopic()
-
-			if err != nil {
-				errMsg := fmt.Sprintf("AddHb: unable to commit stored HB %v, stepId: %d, txId: %d", err,
-					hb.Step, hb.TxId)
-				return types.ReturnError(ctx, err, errMsg)
+			if withoutCompletion {
+				completedHb := hb
+				completed = &completedHb
+			} else {
+				err := hb.CommitTopic()
+				if err != nil {
+					errMsg := fmt.Sprintf("AddHb: unable to commit stored HB %v, stepId: %d, txId: %d", err,
+						hb.Step, hb.TxId)
+					return nil, types.ReturnError(ctx, err, errMsg)
+				}
 			}
 			hb = data
 		}
@@ -185,12 +204,12 @@ func (ht *HeartBeatTracker) AddHb(ctx context.Context, data types.HbData) error 
 	ht.streams[data.StreamId] = hb
 
 	if len(ht.streams) > ht.totalStreamsNum {
-		return fmt.Errorf("Resulted stream count: %d grather than total count: %d",
+		return nil, fmt.Errorf("Resulted stream count: %d grather than total count: %d",
 			len(ht.streams), ht.totalStreamsNum)
 	} else if len(ht.streams) == ht.totalStreamsNum {
 		ht.lastFullHbTime.Store(time.Now().Unix())
 	}
-	return nil
+	return completed, nil
 }
 
 func (ht *HeartBeatTracker) GetReady() bool {

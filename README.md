@@ -379,6 +379,8 @@ mon_server:
 | `state_table` | yes | Destination service table for state and locking. |
 | `instance_id` | yes | Replication identifier and state table row key. |
 | `multiple_instances_mode` | no | Keeps a standby process waiting for the lock. |
+| `commit_offset_mode` | no | Uses `CommitOffset` instead of `Commit` to commit offsets in source CDC topics. |
+| `max_concurrent_offset_commits` | no | Maximum number of concurrent `CommitOffset` requests. |
 | `streams` | yes | CDC topic to destination table mappings. |
 | `max_expected_heartbeat_interval` | recommended | Missing-heartbeat warning threshold and lock TTL input. |
 | `log_level` | no | `debug`, `info`, `warn`, or `error`. |
@@ -1089,6 +1091,8 @@ mon_server:
 | `state_table` | да | Путь сервисной таблицы состояния и lock в destination. |
 | `instance_id` | да | Идентификатор репликации и ключ строки в state table. |
 | `multiple_instances_mode` | нет | Разрешает standby-процессу продолжать ожидание lock. |
+| `commit_offset_mode` | нет | Использует `CommitOffset` вместо `Commit` для коммита оффсетов исходных CDC-топиков. |
+| `max_concurrent_offset_commits` | нет | Максимальное число одновременных запросов `CommitOffset`. |
 | `streams` | да | Список соответствий CDC-топиков и destination-таблиц. |
 | `max_expected_heartbeat_interval` | рекомендуется | Порог предупреждения об отсутствующем heartbeat; также определяет TTL lock. |
 | `log_level` | нет | `debug`, `info`, `warn` или `error`. |
