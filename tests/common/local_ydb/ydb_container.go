@@ -19,7 +19,7 @@ import (
 
 const (
 	healthCheckTimeout   = time.Minute * 1
-	containerStopTimeout = time.Minute * 2
+	containerStopTimeout = 5 * time.Second
 	defaultYdbImage      = "ydbplatform/local-ydb:latest"
 	grpcPort             = "2136"
 	uiPort               = "8765"

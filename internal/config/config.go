@@ -50,6 +50,7 @@ type Config struct {
 	DstStaticToken        string     `yaml:"dst_static_token"`
 	InstanceId            string     `yaml:"instance_id"`
 	MultipleInstancesMode bool       `yaml:"multiple_instances_mode"`
+	CommitOffsetMode      bool       `yaml:"commit_offset_mode"`
 	Streams               []Stream   `yaml:"streams"`
 	StateTable            string     `yaml:"state_table"`
 	MaxExpHbInterval      uint32     `yaml:"max_expected_heartbeat_interval"`
@@ -58,6 +59,8 @@ type Config struct {
 	CmdQueue              *CmdQueue  `yaml:"cmd_queue"`
 	KeyFilter             *KeyFilter `yaml:"key_filter"`
 	DLQueue               *DLQueue   `yaml:"dead_letter_queue"`
+
+	MaxConcurrentOffsetCommits int `yaml:"max_concurrent_offset_commits"`
 }
 
 func verifyStreamProblemStrategy(configStrategy *string) error {
@@ -84,6 +87,9 @@ func (config Config) ToString() (string, error) {
 }
 
 func (config Config) verify() error {
+	if config.CommitOffsetMode && config.MaxConcurrentOffsetCommits <= 0 {
+		return errors.New("max_concurrent_offset_commits must be greater than zero when commit_offset_mode is enabled")
+	}
 	for _, stream := range config.Streams {
 		err := verifyStreamProblemStrategy(&stream.ProblemStrategy)
 		if err != nil {
@@ -104,7 +110,7 @@ func InitConfig(ctx context.Context, confPath string) (Config, error) {
 			zap.Error(err))
 		return Config{}, fmt.Errorf("unable to read configuration file: %w", err)
 	}
-	var config Config
+	config := Config{MaxConcurrentOffsetCommits: 10}
 	err = yaml.Unmarshal(confTxt, &config)
 	if err != nil {
 		xlog.Error(ctx, "Unable to parse configuration file",
