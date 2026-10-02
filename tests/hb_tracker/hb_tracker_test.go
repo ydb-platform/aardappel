@@ -29,6 +29,29 @@ func TestNotAllPart(t *testing.T) {
 	}
 }
 
+func TestAddHbWithoutCompletionReturnsObsoleteHeartbeat(t *testing.T) {
+	ctx := context.Background()
+	tracker := hb_tracker.NewHeartBeatTracker(CreateDummyMap())
+	stream := types.ElementaryStreamId{ReaderId: 0, PartitionId: 0}
+	commitCalled := false
+
+	_, err := tracker.AddHbWithoutCompletion(ctx, types.HbData{
+		StreamId:    stream,
+		Step:        3,
+		CommitTopic: func() error { commitCalled = true; return nil },
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	obsolete, err := tracker.AddHbWithoutCompletion(ctx, types.HbData{StreamId: stream, Step: 5})
+	if err != nil || obsolete == nil || obsolete.Step != 3 {
+		t.Fatalf("replaced heartbeat: obsolete=%v, err=%v", obsolete, err)
+	}
+	if commitCalled {
+		t.Fatal("obsolete heartbeat was completed")
+	}
+}
+
 func TestGetLowestHb(t *testing.T) {
 	ctx := context.Background()
 	tracker := hb_tracker.NewHeartBeatTracker(CreateDummyMap())

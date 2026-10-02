@@ -33,6 +33,11 @@ instance_id: "0"
 ## Enable standby mode for additional instances with the same instance_id.
 ## When enabled, one instance holds the lock and the others wait until it is released.
 multiple_instances_mode: false
+## Enable direct offset commits for each partition.
+## When disabled, Commit is called for each message individually.
+commit_offset_mode: false
+## Maximum number of concurrent offset commit requests when commit_offset_mode is enabled.
+max_concurrent_offset_commits: 1000
 
 ## Replica tables and cdc sources. Transactions will be applied consistently between those tables. Multiple tables can be specified.
 streams:

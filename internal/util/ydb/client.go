@@ -60,7 +60,10 @@ func (c *TableClient) DoTx(ctx context.Context, fn func(ctx context.Context, tx 
 }
 
 type TopicReader struct {
-	reader *topicreader.Reader
+	reader   *topicreader.Reader
+	client   topic.Client
+	path     string
+	consumer string
 }
 
 func (r *TopicReader) Close(ctx context.Context) error {
@@ -81,6 +84,17 @@ func (r *TopicReader) Commit(ctx context.Context, msg *topicreader.Message) erro
 	err := r.reader.Commit(ctx, msg)
 	if err != nil {
 		return HandleRequestError(ctx, err)
+	}
+	return nil
+}
+
+func (r *TopicReader) CommitOffset(ctx context.Context, partitionID int64, offset int64) error {
+	ctxWithTimeout, cancel := context.WithTimeout(ctx, DEFAULT_TIMEOUT)
+	defer cancel()
+	err := r.client.CommitOffset(ctxWithTimeout, r.path, partitionID, r.consumer, offset,
+		topicoptions.WithCommitOffsetReadSessionID(r.reader.ReadSessionID()))
+	if err != nil {
+		return HandleRequestError(ctxWithTimeout, err)
 	}
 	return nil
 }
@@ -112,6 +126,9 @@ func (c *TopicClient) StartReader(consumer string, path string, opts ...topicopt
 	}
 	var topicReader TopicReader
 	topicReader.reader = reader
+	topicReader.client = c.client
+	topicReader.path = path
+	topicReader.consumer = consumer
 	return &topicReader, nil
 }
 
