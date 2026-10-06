@@ -335,6 +335,7 @@ func main() {
 		CredentialsFile:   config.SrcOAuthFile,
 		StaticToken:       config.SrcStaticToken,
 		ExchangerEndpoint: config.SrcOAuthEndpoint,
+		K8sJWTAuth:        config.SrcK8sJWTAuth,
 	})
 	if err != nil {
 		xlog.Fatal(ctx, "Unable to create auth option for src",
@@ -345,6 +346,7 @@ func main() {
 		CredentialsFile:   config.DstOAuthFile,
 		StaticToken:       config.DstStaticToken,
 		ExchangerEndpoint: config.DstOAuthEndpoint,
+		K8sJWTAuth:        config.DstK8sJWTAuth,
 	})
 	if err != nil {
 		xlog.Fatal(ctx, "Unable to create auth option for dst",
