@@ -6,8 +6,59 @@ At the aardappel config level, each side of replication can use exactly one of:
 
 - `*_static_token`: a final YDB access token, used directly without OAuth2 token exchange.
 - `*_oauth2_file`: a credentials file used to configure OAuth2 token exchange.
+- `*_k8s_jwt_auth`: Kubernetes projected volume JWT authentication.
 
 For OAuth2 credentials, aardappel currently supports two JSON file formats.
+
+## Kubernetes projected volume JWT authentication
+
+Configure `src_k8s_jwt_auth` and/or `dst_k8s_jwt_auth` directly in the aardappel
+YAML configuration and set the corresponding top-level `src_oauth2_endpoint`
+and/or `dst_oauth2_endpoint`, without an additional JSON credentials file:
+
+```yaml
+src_oauth2_endpoint: "https://sts.example.net/oauth2/token/exchange"
+src_k8s_jwt_auth:
+  k8s_token_path: "/var/run/secrets/aardappel/token"
+  subject_token: "serviceaccount-source"
+  subject_token_type: "urn:ietf:params:oauth:token-type:subject_id"
+
+dst_oauth2_endpoint: "https://sts.example.net/oauth2/token/exchange"
+dst_k8s_jwt_auth:
+  k8s_token_path: "/var/run/secrets/aardappel/token"
+  subject_token: "serviceaccount-destination"
+  subject_token_type: "urn:ietf:params:oauth:token-type:subject_id"
+```
+
+All three fields inside each `*_k8s_jwt_auth` block are required:
+
+| Field | Purpose |
+|---|---|
+| `k8s_token_path` | Path to the mounted Kubernetes JWT file. |
+| `subject_token` | Service account identifier to authenticate as. |
+| `subject_token_type` | Subject token type accepted by the token service; use the value required by your provider. |
+
+The corresponding top-level `*_oauth2_endpoint` is also required and specifies
+the URL of the OAuth2 token exchange service. If it is empty, authentication
+setup fails with `oauth2_endpoint must be set`.
+
+The JWT is sent as `actor_token` with type `urn:ietf:params:oauth:token-type:jwt`.
+The subject token and its type are taken from the configuration. The exchange uses
+`urn:ietf:params:oauth:grant-type:token-exchange` and requests an access token
+(`urn:ietf:params:oauth:token-type:access_token`).
+
+The token file is read on every exchange, with surrounding whitespace removed.
+The SDK caches and refreshes the returned access token; subsequent exchanges use
+the current file contents, so projected-token rotation does not require restarting
+Aardappel. File read and token exchange errors are reported when a token is requested.
+
+Mount a projected service account token with an audience accepted by your token
+service. Configure the service to trust the Kubernetes token issuer and grant
+the required service account permissions.
+
+For each side, remove its `*_oauth2_file` and `*_static_token` settings when using
+`*_k8s_jwt_auth`. Source and destination may use different methods and identities.
+Set the endpoint for each side through its top-level `*_oauth2_endpoint`.
 
 ## YDB SDK OAuth2 Format
 
@@ -92,16 +143,20 @@ The optional exchanger endpoint is configured as:
 }
 ```
 
-## Endpoint Override
+## Token Exchange Endpoint
 
 The aardappel config can specify side-specific OAuth2 exchanger endpoints:
 
 - `src_oauth2_endpoint`
 - `dst_oauth2_endpoint`
 
-When a side-specific endpoint is set in aardappel config, it overrides the endpoint from the credentials file.
+For `*_k8s_jwt_auth`, the corresponding endpoint is required and is used directly
+for token exchange.
 
-When it is not set, the endpoint from the credentials file is used:
+For `*_oauth2_file`, a configured endpoint overrides the endpoint from the
+credentials file. If it is not set, the endpoint from the credentials file is used:
 
 - YDB SDK format: `token-endpoint`
 - alternative format: `oauth2_token_exchange.exchanger.endpoint`
+
+For `*_static_token`, no token exchange is performed and `*_oauth2_endpoint` is ignored.

@@ -370,12 +370,12 @@ mon_server:
 |---|---:|---|
 | `src_connection_string` | yes | Source YDB connection string. |
 | `src_client_balancer` | no | `false` enables `SingleConn`, useful when direct node access is unavailable. |
-| `src_oauth2_file` / `src_static_token` | yes | Exactly one source authentication method. |
-| `src_oauth2_endpoint` | no | Overrides the credentials-file token exchange endpoint. |
+| `src_oauth2_file` / `src_static_token` / `src_k8s_jwt_auth` | yes | Exactly one source authentication method. |
+| `src_oauth2_endpoint` | with `src_k8s_jwt_auth` | Token exchange endpoint for Kubernetes projected volume JWT authentication; overrides the endpoint from `src_oauth2_file` when using a credentials file. |
 | `dst_connection_string` | yes | Destination YDB connection string. |
 | `dst_client_balancer` | no | Equivalent destination setting. |
-| `dst_oauth2_file` / `dst_static_token` | yes | Exactly one destination authentication method. |
-| `dst_oauth2_endpoint` | no | Overrides the destination token exchange endpoint. |
+| `dst_oauth2_file` / `dst_static_token` / `dst_k8s_jwt_auth` | yes | Exactly one destination authentication method. |
+| `dst_oauth2_endpoint` | with `dst_k8s_jwt_auth` | Token exchange endpoint for Kubernetes projected volume JWT authentication; overrides the endpoint from `dst_oauth2_file` when using a credentials file. |
 | `state_table` | yes | Destination service table for state and locking. |
 | `instance_id` | yes | Replication identifier and state table row key. |
 | `multiple_instances_mode` | no | Keeps a standby process waiting for the lock. |
@@ -562,7 +562,8 @@ Source and destination authentication are configured independently. Set
 **exactly one** method for each side:
 
 - `*_static_token`: a final YDB access token without OAuth2 exchange;
-- `*_oauth2_file`: a JSON file describing OAuth2 token exchange.
+- `*_oauth2_file`: a JSON file describing OAuth2 token exchange;
+- `*_k8s_jwt_auth`: Kubernetes projected volume JWT authentication.
 
 Two credential-file formats are supported:
 
@@ -573,8 +574,33 @@ Two credential-file formats are supported:
    account tokens.
 
 `src_oauth2_endpoint` and `dst_oauth2_endpoint` override the endpoint in their
-respective credentials file. See [`internal/auth/README.md`](internal/auth/README.md)
-for complete field descriptions and JSON examples.
+respective credentials file.
+
+To use Kubernetes projected volume JWT authentication, configure the relevant
+side directly in YAML:
+
+```yaml
+src_oauth2_endpoint: "https://sts.example.net/oauth2/token/exchange"
+src_k8s_jwt_auth:
+  k8s_token_path: "/var/run/secrets/aardappel/token"
+  subject_token: "serviceaccount-source"
+  subject_token_type: "urn:ietf:params:oauth:token-type:subject_id"
+```
+
+All three fields inside `src_k8s_jwt_auth` and the top-level
+`src_oauth2_endpoint` are required. For destination authentication, use
+`dst_k8s_jwt_auth` with `dst_oauth2_endpoint`.
+Remove `*_oauth2_file` and `*_static_token` for the same side. The Kubernetes JWT
+is the actor token; `subject_token` identifies the service account and
+`subject_token_type` must match the token service's requirements. Configure that
+service to trust the Kubernetes token issuer and mount a projected JWT with the
+expected audience.
+The token file is reread on each exchange, so token rotation is supported without
+restarting Aardappel. The SDK caches and refreshes the resulting access token.
+The exchange uses the corresponding top-level `*_oauth2_endpoint`.
+
+See [`internal/auth/README.md`](internal/auth/README.md) for complete field
+descriptions and JSON/YAML examples.
 
 ## Problem message handling
 
@@ -1082,12 +1108,12 @@ mon_server:
 |---|---:|---|
 | `src_connection_string` | да | YDB connection string исходной базы. |
 | `src_client_balancer` | нет | `false` включает `SingleConn`; полезно, когда прямой доступ к узлам невозможен. |
-| `src_oauth2_file` / `src_static_token` | да | Ровно один способ авторизации source. |
-| `src_oauth2_endpoint` | нет | Переопределяет endpoint обмена токенов из credentials-файла. |
+| `src_oauth2_file` / `src_static_token` / `src_k8s_jwt_auth` | да | Ровно один способ авторизации source. |
+| `src_oauth2_endpoint` | при `src_k8s_jwt_auth` | Endpoint обмена токенов для аутентификации с JWT из projected volume Kubernetes; при использовании `src_oauth2_file` переопределяет endpoint из файла. |
 | `dst_connection_string` | да | YDB connection string целевой базы. |
 | `dst_client_balancer` | нет | Аналогичный параметр для destination. |
-| `dst_oauth2_file` / `dst_static_token` | да | Ровно один способ авторизации destination. |
-| `dst_oauth2_endpoint` | нет | Переопределяет endpoint обмена токенов destination. |
+| `dst_oauth2_file` / `dst_static_token` / `dst_k8s_jwt_auth` | да | Ровно один способ авторизации destination. |
+| `dst_oauth2_endpoint` | при `dst_k8s_jwt_auth` | Endpoint обмена токенов для аутентификации с JWT из projected volume Kubernetes; при использовании `dst_oauth2_file` переопределяет endpoint из файла. |
 | `state_table` | да | Путь сервисной таблицы состояния и lock в destination. |
 | `instance_id` | да | Идентификатор репликации и ключ строки в state table. |
 | `multiple_instances_mode` | нет | Разрешает standby-процессу продолжать ожидание lock. |
@@ -1276,7 +1302,8 @@ Source и destination настраиваются независимо. Для к
 задать **ровно один** вариант:
 
 - `*_static_token` — готовый YDB access token без OAuth2 exchange;
-- `*_oauth2_file` — JSON-файл параметров OAuth2 token exchange.
+- `*_oauth2_file` — JSON-файл параметров OAuth2 token exchange;
+- `*_k8s_jwt_auth` — аутентификация с JWT service account из projected volume Kubernetes.
 
 Поддерживаются два формата credentials-файла:
 
@@ -1289,7 +1316,30 @@ Source и destination настраиваются независимо. Для к
 Параметры `src_oauth2_endpoint` и `dst_oauth2_endpoint` имеют приоритет над
 endpoint внутри соответствующего credentials-файла.
 
-Полное описание форматов, полей и примеры JSON находятся в
+Для аутентификации с JWT из projected volume Kubernetes настройте нужную
+сторону непосредственно в YAML:
+
+```yaml
+src_oauth2_endpoint: "https://sts.example.net/oauth2/token/exchange"
+src_k8s_jwt_auth:
+  k8s_token_path: "/var/run/secrets/aardappel/token"
+  subject_token: "serviceaccount-source"
+  subject_token_type: "urn:ietf:params:oauth:token-type:subject_id"
+```
+
+Все три поля внутри `src_k8s_jwt_auth` и параметр верхнего уровня
+`src_oauth2_endpoint` обязательны. Для destination используйте
+`dst_k8s_jwt_auth` вместе с `dst_oauth2_endpoint`.
+Удалите `*_oauth2_file` и `*_static_token` для той же стороны. JWT из Kubernetes
+передаётся как actor token, `subject_token` задаёт service account, а
+`subject_token_type` должен соответствовать требованиям сервиса обмена токенов.
+Заранее настройте доверие сервиса к издателю токенов Kubernetes и смонтируйте
+projected JWT с audience, которую принимает этот сервис. Файл JWT перечитывается при каждом обмене,
+поэтому ротация поддерживается без перезапуска Aardappel. SDK кеширует и обновляет
+полученный access token. Обмен выполняется через соответствующий параметр
+верхнего уровня `*_oauth2_endpoint`.
+
+Полное описание форматов, полей и примеры JSON/YAML находятся в
 [`internal/auth/README.md`](internal/auth/README.md).
 
 ## Обработка проблемных сообщений

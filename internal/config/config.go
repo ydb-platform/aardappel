@@ -37,30 +37,68 @@ type KeyFilter struct {
 	Path string `yaml:"table_path"`
 }
 
+// K8sJWTAuthConfig configures authentication using a Kubernetes projected volume JWT.
+// This is an alternative to an OAuth2 credentials file for environments where K8s service account
+// tokens are available and automatically rotated.
+type K8sJWTAuthConfig struct {
+	K8sTokenPath         string `yaml:"k8s_token_path"`
+	SubjectToken         string `yaml:"subject_token"`
+	SubjectTokenType     string `yaml:"subject_token_type"`
+}
+
 type Config struct {
-	SrcConnectionString   string     `yaml:"src_connection_string"`
-	SrcClientBalancer     bool       `yaml:"src_client_balancer"`
-	SrcOAuthFile          string     `yaml:"src_oauth2_file"`
-	SrcOAuthEndpoint      string     `yaml:"src_oauth2_endpoint"`
-	SrcStaticToken        string     `yaml:"src_static_token"`
-	DstConnectionString   string     `yaml:"dst_connection_string"`
-	DstClientBalancer     bool       `yaml:"dst_client_balancer"`
-	DstOAuthFile          string     `yaml:"dst_oauth2_file"`
-	DstOAuthEndpoint      string     `yaml:"dst_oauth2_endpoint"`
-	DstStaticToken        string     `yaml:"dst_static_token"`
-	InstanceId            string     `yaml:"instance_id"`
-	MultipleInstancesMode bool       `yaml:"multiple_instances_mode"`
-	CommitOffsetMode      bool       `yaml:"commit_offset_mode"`
-	Streams               []Stream   `yaml:"streams"`
-	StateTable            string     `yaml:"state_table"`
-	MaxExpHbInterval      uint32     `yaml:"max_expected_heartbeat_interval"`
-	LogLevel              string     `yaml:"log_level"`
-	MonServer             *MonServer `yaml:"mon_server"`
-	CmdQueue              *CmdQueue  `yaml:"cmd_queue"`
-	KeyFilter             *KeyFilter `yaml:"key_filter"`
-	DLQueue               *DLQueue   `yaml:"dead_letter_queue"`
+	SrcConnectionString   string            `yaml:"src_connection_string"`
+	SrcClientBalancer     bool              `yaml:"src_client_balancer"`
+	SrcOAuthFile          string            `yaml:"src_oauth2_file"`
+	SrcOAuthEndpoint      string            `yaml:"src_oauth2_endpoint"`
+	SrcStaticToken        string            `yaml:"src_static_token"`
+	SrcK8sJWTAuth         *K8sJWTAuthConfig `yaml:"src_k8s_jwt_auth,omitempty"`
+	DstConnectionString   string            `yaml:"dst_connection_string"`
+	DstClientBalancer     bool              `yaml:"dst_client_balancer"`
+	DstOAuthFile          string            `yaml:"dst_oauth2_file"`
+	DstOAuthEndpoint      string            `yaml:"dst_oauth2_endpoint"`
+	DstStaticToken        string            `yaml:"dst_static_token"`
+	DstK8sJWTAuth         *K8sJWTAuthConfig `yaml:"dst_k8s_jwt_auth,omitempty"`
+	InstanceId            string            `yaml:"instance_id"`
+	MultipleInstancesMode bool              `yaml:"multiple_instances_mode"`
+	CommitOffsetMode      bool              `yaml:"commit_offset_mode"`
+	Streams               []Stream          `yaml:"streams"`
+	StateTable            string            `yaml:"state_table"`
+	MaxExpHbInterval      uint32            `yaml:"max_expected_heartbeat_interval"`
+	LogLevel              string            `yaml:"log_level"`
+	MonServer             *MonServer        `yaml:"mon_server"`
+	CmdQueue              *CmdQueue         `yaml:"cmd_queue"`
+	KeyFilter             *KeyFilter        `yaml:"key_filter"`
+	DLQueue               *DLQueue          `yaml:"dead_letter_queue"`
 
 	MaxConcurrentOffsetCommits int `yaml:"max_concurrent_offset_commits"`
+}
+
+func (c *K8sJWTAuthConfig) Validate() error {
+	if c.K8sTokenPath == "" {
+		return errors.New("k8s_token_path is required")
+	}
+	if c.SubjectToken == "" {
+		return errors.New("subject_token is required")
+	}
+	if c.SubjectTokenType == "" {
+		return errors.New("subject_token_type is required")
+	}
+	return nil
+}
+
+func (config Config) ValidateAuth() error {
+	if config.SrcK8sJWTAuth != nil {
+		if err := config.SrcK8sJWTAuth.Validate(); err != nil {
+			return fmt.Errorf("src_k8s_jwt_auth: %w", err)
+		}
+	}
+	if config.DstK8sJWTAuth != nil {
+		if err := config.DstK8sJWTAuth.Validate(); err != nil {
+			return fmt.Errorf("dst_k8s_jwt_auth: %w", err)
+		}
+	}
+	return nil
 }
 
 func verifyStreamProblemStrategy(configStrategy *string) error {
@@ -96,7 +134,7 @@ func (config Config) verify() error {
 			return err
 		}
 	}
-	return nil
+	return config.ValidateAuth()
 }
 
 func InitConfig(ctx context.Context, confPath string) (Config, error) {

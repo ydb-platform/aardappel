@@ -1,6 +1,8 @@
 package auth
 
 import (
+	"aardappel/internal/config"
+	"aardappel/internal/credentials"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -53,6 +55,7 @@ type AuthConfig struct {
 	CredentialsFile   string
 	StaticToken       string
 	ExchangerEndpoint string
+	K8sJWTAuth        *config.K8sJWTAuthConfig
 }
 
 func (s fileTokenSource) Token() (ydbCredentials.Token, error) {
@@ -67,9 +70,34 @@ func (s fileTokenSource) Token() (ydbCredentials.Token, error) {
 }
 
 func CreateYdbDriverAuthOptions(config AuthConfig) ([]ydb.Option, error) {
-	if (len(config.CredentialsFile) > 0 && len(config.StaticToken) > 0) ||
-		(len(config.CredentialsFile) == 0 && len(config.StaticToken) == 0) {
-		return nil, errors.New("it's either oauth2_file or static_token option must be set")
+	methods := 0
+	if config.CredentialsFile != "" {
+		methods++
+	}
+	if config.StaticToken != "" {
+		methods++
+	}
+	if config.K8sJWTAuth != nil {
+		methods++
+	}
+	if methods != 1 {
+		return nil, errors.New("exactly one of oauth2_file, static_token or k8s_jwt_auth must be set")
+	}
+
+	if config.K8sJWTAuth != nil {
+		if config.ExchangerEndpoint == "" {
+			return nil, errors.New("oauth2_endpoint must be set")
+		}
+		creds, err := credentials.NewK8sJWTCredentials(credentials.K8sJWTConfig{
+			K8sTokenPath:         config.K8sJWTAuth.K8sTokenPath,
+			TokenServiceEndpoint: config.ExchangerEndpoint,
+			SubjectToken:         config.K8sJWTAuth.SubjectToken,
+			SubjectTokenType:     config.K8sJWTAuth.SubjectTokenType,
+		})
+		if err != nil {
+			return nil, fmt.Errorf("create K8s JWT credentials: %w", err)
+		}
+		return []ydb.Option{ydb.WithCredentials(creds)}, nil
 	}
 
 	if len(config.StaticToken) > 0 {

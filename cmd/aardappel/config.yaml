@@ -4,12 +4,22 @@ src_connection_string: "grpcs://shared-1-grpc.ydb-global.svc.cluster.local:2135/
 ## Set to false if direct connection between client and ydb nodes is not possible (k8s)
 ## Set to true otherwise
 src_client_balancer: false
-## Source authorizatrion one of:
+## Source authentication: exactly one of:
 ##   src_oauth2_file - path to the oauth2 file
 ##   src_static_token - YDB static token
+##   src_k8s_jwt_auth - Kubernetes projected volume JWT authentication
 src_oauth2_file: "/opt/aardappel/secrets/src-sa/key.json"
-## OAuth2 token exchange endpoint for src credentials, overrides token-endpoint from src_oauth2_file when set.
+## OAuth2 token exchange endpoint: required for src_k8s_jwt_auth.
+## With src_oauth2_file, overrides the endpoint from the credentials file when set.
 src_oauth2_endpoint: "https://tokens.svc.cluster.local:443/oauth2/token/exchange"
+## To enable Kubernetes projected volume JWT authentication below,
+## remove src_oauth2_file and src_static_token.
+## All three fields below are required; use the subject token type expected by your token service.
+## Set the token exchange URL in the top-level src_oauth2_endpoint above.
+# src_k8s_jwt_auth:
+#   k8s_token_path: "/var/run/secrets/aardappel/token"
+#   subject_token: "serviceaccount-src"
+#   subject_token_type: "urn:ietf:params:oauth:token-type:subject_id"
 
 ## Connection string to the destination cluster: grpcs://<ENDPOINT>/<DATABASE>
 dst_connection_string: "grpcs://shared-1-grpc.ydb-global.svc.cluster.local:2135/testing-global/aardappel-test"
@@ -17,12 +27,22 @@ dst_connection_string: "grpcs://shared-1-grpc.ydb-global.svc.cluster.local:2135/
 ## Set to false if direct connection between client and ydb nodes is not possible (k8s)
 ## Set to true otherwise
 dst_client_balancer: false
-## Destination authorizatrion one of:
+## Destination authentication: exactly one of:
 ##   dst_oauth2_file - path to the oauth2 file
 ##   dst_static_token - YDB static token
+##   dst_k8s_jwt_auth - Kubernetes projected volume JWT authentication
 dst_oauth2_file: "/opt/aardappel/secrets/dst-sa/key.json"
-## OAuth2 token exchange endpoint for dst credentials, overrides token-endpoint from dst_oauth2_file when set.
+## OAuth2 token exchange endpoint: required for dst_k8s_jwt_auth.
+## With dst_oauth2_file, overrides the endpoint from the credentials file when set.
 dst_oauth2_endpoint: "https://tokens.svc.cluster.local:443/oauth2/token/exchange"
+## To enable Kubernetes projected volume JWT authentication below,
+## remove dst_oauth2_file and dst_static_token.
+## All three fields below are required; use the subject token type expected by your token service.
+## Set the token exchange URL in the top-level dst_oauth2_endpoint above.
+# dst_k8s_jwt_auth:
+#   k8s_token_path: "/var/run/secrets/aardappel/token"
+#   subject_token: "serviceaccount-dst"
+#   subject_token_type: "urn:ietf:params:oauth:token-type:subject_id"
 
 ## The table name to save replication state in the destination database
 ## the table will be created in the destination database if absent.

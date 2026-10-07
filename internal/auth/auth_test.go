@@ -1,6 +1,7 @@
 package auth
 
 import (
+	"aardappel/internal/config"
 	"context"
 	"crypto/rand"
 	"crypto/rsa"
@@ -13,9 +14,15 @@ import (
 	"os"
 	"path/filepath"
 	"reflect"
+	"sync"
 	"testing"
+	"time"
 
 	"github.com/golang-jwt/jwt/v4"
+	"github.com/stretchr/testify/require"
+	"github.com/ydb-platform/ydb-go-sdk/v3"
+	"github.com/ydb-platform/ydb-go-sdk/v3/balancers"
+	ydbConfig "github.com/ydb-platform/ydb-go-sdk/v3/config"
 	ydbCredentials "github.com/ydb-platform/ydb-go-sdk/v3/credentials"
 )
 
@@ -198,6 +205,7 @@ type jwtExpectation struct {
 
 type tokenExchangeServer struct {
 	URL     string
+	mu      sync.Mutex
 	request url.Values
 }
 
@@ -206,8 +214,14 @@ func startTokenExchangeServer(t *testing.T) *tokenExchangeServer {
 
 	server := &tokenExchangeServer{}
 	httpServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		must(t, r.ParseForm())
+		if err := r.ParseForm(); err != nil {
+			t.Errorf("parse token exchange request: %v", err)
+			http.Error(w, "invalid form", http.StatusBadRequest)
+			return
+		}
+		server.mu.Lock()
 		server.request = cloneValues(r.Form)
+		server.mu.Unlock()
 		_, _ = w.Write([]byte(`{"access_token":"very-very-token","token_type":"Bearer","expires_in":3600}`))
 	}))
 	t.Cleanup(httpServer.Close)
@@ -217,24 +231,40 @@ func startTokenExchangeServer(t *testing.T) *tokenExchangeServer {
 }
 
 func (s *tokenExchangeServer) Request() url.Values {
-	return s.request
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return cloneValues(s.request)
+}
+
+// Inspect the credentials installed by the public auth factory in a real SDK
+// driver. SingleConn avoids discovery; no YDB server is needed for these tests.
+func driverCredentials(t *testing.T, config AuthConfig) ydbCredentials.Credentials {
+	t.Helper()
+
+	opts, err := CreateYdbDriverAuthOptions(config)
+	must(t, err)
+	var creds ydbCredentials.Credentials
+	opts = append(opts,
+		ydb.WithBalancer(balancers.SingleConn()),
+		ydb.With(func(cfg *ydbConfig.Config) { creds = cfg.Credentials() }),
+	)
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	driver, err := ydb.Open(ctx, "grpc://127.0.0.1:1/local", opts...)
+	must(t, err)
+	t.Cleanup(func() { must(t, driver.Close(context.Background())) })
+	require.NotNil(t, creds)
+	return creds
 }
 
 func obtainToken(t *testing.T, config AuthConfig) string {
 	t.Helper()
 
-	opts, err := oauth2CredentialsOptions(config.CredentialsFile)
+	creds := driverCredentials(t, config)
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	token, err := creds.Token(ctx)
 	must(t, err)
-	if config.ExchangerEndpoint != "" {
-		opts = append(opts, ydbCredentials.WithTokenEndpoint(config.ExchangerEndpoint))
-	}
-
-	creds, err := ydbCredentials.NewOauth2TokenExchangeCredentials(opts...)
-	must(t, err)
-
-	token, err := creds.Token(context.Background())
-	must(t, err)
-
 	return token
 }
 
@@ -344,4 +374,98 @@ func must(t *testing.T, err error) {
 	if err != nil {
 		t.Fatal(err)
 	}
+}
+
+func TestCreateYdbDriverAuthOptionsRejectsInvalidMethodSelection(t *testing.T) {
+	for _, tc := range []struct {
+		name   string
+		config AuthConfig
+	}{
+		{name: "no credentials"},
+		{name: "endpoint only", config: AuthConfig{ExchangerEndpoint: "https://sts.example.net/token"}},
+		{name: "file and static token", config: AuthConfig{CredentialsFile: "unused.json", StaticToken: "unused"}},
+		{name: "file and K8s JWT", config: AuthConfig{CredentialsFile: "unused.json", K8sJWTAuth: &config.K8sJWTAuthConfig{}}},
+		{name: "static token and K8s JWT", config: AuthConfig{StaticToken: "unused", K8sJWTAuth: &config.K8sJWTAuthConfig{}}},
+		{name: "all methods", config: AuthConfig{CredentialsFile: "unused.json", StaticToken: "unused", K8sJWTAuth: &config.K8sJWTAuthConfig{}}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			opts, err := CreateYdbDriverAuthOptions(tc.config)
+			require.ErrorContains(t, err, "exactly one of oauth2_file, static_token or k8s_jwt_auth must be set")
+			require.Nil(t, opts)
+		})
+	}
+}
+
+func TestStaticTokenCredentials(t *testing.T) {
+	require.Equal(t, "static-access-token", obtainToken(t, AuthConfig{StaticToken: "static-access-token"}))
+}
+
+func TestK8sJWTDriverCredentials(t *testing.T) {
+	server := startTokenExchangeServer(t)
+	actorJWT := "test-k8s-jwt"
+	tokenPath := writeTempFile(t, "token", " \n"+actorJWT+"\n")
+	token := obtainToken(t, AuthConfig{
+		ExchangerEndpoint: server.URL,
+		K8sJWTAuth: &config.K8sJWTAuthConfig{
+			K8sTokenPath:         tokenPath,
+			SubjectToken:         "serviceaccount-example",
+			SubjectTokenType:     "urn:ietf:params:oauth:token-type:subject_id",
+		},
+	})
+	require.Equal(t, "Bearer very-very-token", token)
+	assertTokenExchangeRequest(t, values(
+		"grant_type", "urn:ietf:params:oauth:grant-type:token-exchange",
+		"requested_token_type", "urn:ietf:params:oauth:token-type:access_token",
+		"actor_token", actorJWT,
+		"actor_token_type", "urn:ietf:params:oauth:token-type:jwt",
+		"subject_token", "serviceaccount-example",
+		"subject_token_type", "urn:ietf:params:oauth:token-type:subject_id",
+	), server.Request(), nil)
+}
+
+func TestK8sJWTDriverCredentialsRequireAllFields(t *testing.T) {
+	for _, field := range []string{"k8s_token_path", "oauth2_endpoint", "subject_token", "subject_token_type"} {
+		t.Run(field, func(t *testing.T) {
+			cfg := AuthConfig{
+				ExchangerEndpoint: "https://sts.example.net/token",
+				K8sJWTAuth: &config.K8sJWTAuthConfig{
+					K8sTokenPath:         "/unused/token",
+					SubjectToken:         "serviceaccount-example",
+					SubjectTokenType:     "urn:ietf:params:oauth:token-type:subject_id",
+				},
+			}
+			expectedError := "create K8s JWT credentials: "+field+" is required for K8s JWT auth"
+			switch field {
+			case "k8s_token_path":
+				cfg.K8sJWTAuth.K8sTokenPath = ""
+			case "oauth2_endpoint":
+				cfg.ExchangerEndpoint = ""
+				expectedError = "oauth2_endpoint must be set"
+			case "subject_token":
+				cfg.K8sJWTAuth.SubjectToken = ""
+			case "subject_token_type":
+				cfg.K8sJWTAuth.SubjectTokenType = ""
+			}
+			opts, err := CreateYdbDriverAuthOptions(cfg)
+			require.ErrorContains(t, err, expectedError)
+			require.Nil(t, opts)
+		})
+	}
+}
+
+func TestK8sJWTDriverCredentialsPropagateTokenFileError(t *testing.T) {
+	tokenPath := filepath.Join(t.TempDir(), "missing-token")
+	creds := driverCredentials(t, AuthConfig{
+		ExchangerEndpoint: "http://127.0.0.1:1/unused",
+		K8sJWTAuth: &config.K8sJWTAuthConfig{
+			K8sTokenPath:         tokenPath,
+			SubjectToken:         "serviceaccount-example",
+			SubjectTokenType:     "urn:ietf:params:oauth:token-type:subject_id",
+		}})
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	token, err := creds.Token(ctx)
+	require.ErrorIs(t, err, os.ErrNotExist)
+	require.ErrorContains(t, err, tokenPath)
+	require.Empty(t, token)
 }
