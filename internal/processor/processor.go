@@ -61,6 +61,20 @@ type Processor struct {
 	stage           string
 	initialScanPos  *types.HbData
 	keyFilter       KeyFilter
+
+	commitOffsetMode bool
+
+	// These fields are used only when commit_offset_mode is true.
+	offsetProgressByStream     map[types.ElementaryStreamId]*partitionOffsetProgress
+	streamsWithOffsetsToCommit map[types.ElementaryStreamId]struct{}
+	commitTasks                chan offsetCommitTask
+	topicReaders               []offsetCommitter
+}
+
+type partitionOffsetProgress struct {
+	readyToCommitOffset  int64                       // End of the contiguous processed part.
+	queuedToCommitOffset int64                       // Last offset sent to the commit worker.
+	pendingOffsets       map[int64]types.TopicOffset // Processed messages waiting for earlier offsets.
 }
 
 type PerTableStats struct {
@@ -85,6 +99,7 @@ type ReplicationStats struct {
 type Channel interface {
 	EnqueueTx(ctx context.Context, data types.TxData) error
 	EnqueueHb(ctx context.Context, heartbeat types.HbData) error
+	EnqueueProcessedOffset(ctx context.Context, readerId uint32, offset types.TopicOffset)
 	SaveReplicationState(ctx context.Context, state string, lastError string) error
 }
 
@@ -312,8 +327,9 @@ func selectReplicationState(ctx context.Context, client *client.TableClient, sta
 	return ReplicationState{position: types.Position{*step, *txId}, stage: *stage}, err
 }
 
-func NewProcessor(ctx context.Context, streamLayout hb_tracker.TopicPartsCount, stateTablePath string, client *client.TableClient, instanceId string, filter *config.KeyFilter) (*Processor, error) {
+func NewProcessor(ctx context.Context, streamLayout hb_tracker.TopicPartsCount, stateTablePath string, client *client.TableClient, instanceId string, filter *config.KeyFilter, commitOffsetMode bool, maxConcurrentOffsetCommits int) (*Processor, error) {
 	var p Processor
+	p.commitOffsetMode = commitOffsetMode
 	p.hbTracker = hb_tracker.NewHeartBeatTracker(streamLayout)
 	p.txChannel = make(chan func() error, 1000)
 	p.txQueue = tx_queue.NewTxQueue()
@@ -348,6 +364,13 @@ func NewProcessor(ctx context.Context, streamLayout hb_tracker.TopicPartsCount, 
 		zap.Uint64("last step:", state.position.Step),
 		zap.Uint64("last tx_id:", state.position.TxId))
 
+	if commitOffsetMode {
+		p.offsetProgressByStream = make(map[types.ElementaryStreamId]*partitionOffsetProgress)
+		p.commitTasks = make(chan offsetCommitTask, 1000)
+		p.topicReaders = make([]offsetCommitter, len(streamLayout.TopicPartsCountMap))
+		go runOffsetCommitter(ctx, p.commitTasks, p.topicReaders, maxConcurrentOffsetCommits)
+	}
+
 	return &p, err
 }
 
@@ -365,6 +388,82 @@ func (processor *Processor) Enqueue(ctx context.Context, fn func() error) {
 	}
 }
 
+func (processor *Processor) registerOffset(readerId uint32, offset types.TopicOffset) *partitionOffsetProgress {
+	key := types.ElementaryStreamId{ReaderId: readerId, PartitionId: offset.PartitionId}
+	progress, ok := processor.offsetProgressByStream[key]
+	if !ok {
+		progress = &partitionOffsetProgress{
+			readyToCommitOffset:  offset.StartOffset,
+			queuedToCommitOffset: offset.StartOffset,
+			pendingOffsets:       make(map[int64]types.TopicOffset),
+		}
+		processor.offsetProgressByStream[key] = progress
+	}
+	return progress
+}
+
+func (processor *Processor) markOffsetProcessed(readerId uint32, offset types.TopicOffset) {
+	progress := processor.registerOffset(readerId, offset)
+	if offset.Offset < progress.readyToCommitOffset {
+		return
+	}
+	if offset.StartOffset != progress.readyToCommitOffset {
+		progress.pendingOffsets[offset.StartOffset] = offset
+		return
+	}
+
+	for {
+		progress.readyToCommitOffset = offset.Offset + 1
+		nextOffset, ok := progress.pendingOffsets[progress.readyToCommitOffset]
+		if !ok {
+			break
+		}
+		delete(progress.pendingOffsets, progress.readyToCommitOffset)
+		offset = nextOffset
+	}
+	if processor.streamsWithOffsetsToCommit == nil {
+		processor.streamsWithOffsetsToCommit = make(map[types.ElementaryStreamId]struct{})
+	}
+	processor.streamsWithOffsetsToCommit[types.ElementaryStreamId{ReaderId: readerId, PartitionId: offset.PartitionId}] = struct{}{}
+}
+
+func (processor *Processor) scheduleOffsetCommits(ctx context.Context) {
+	for key := range processor.streamsWithOffsetsToCommit {
+		progress := processor.offsetProgressByStream[key]
+		if progress.readyToCommitOffset <= progress.queuedToCommitOffset {
+			continue
+		}
+		select {
+		case processor.commitTasks <- offsetCommitTask{stream: key, offset: progress.readyToCommitOffset}:
+			progress.queuedToCommitOffset = progress.readyToCommitOffset
+			delete(processor.streamsWithOffsetsToCommit, key)
+		case <-ctx.Done():
+			return
+		default:
+			return
+		}
+	}
+}
+
+func (processor *Processor) RegisterTopicReader(readerID uint32, reader offsetCommitter) {
+	processor.topicReaders[readerID] = reader
+}
+
+func (processor *Processor) EnqueueProcessedOffset(ctx context.Context, readerId uint32, offset types.TopicOffset) {
+	processor.Enqueue(ctx, func() error {
+		processor.markOffsetProcessed(readerId, offset)
+		return nil
+	})
+}
+
+func (processor *Processor) completeHb(hb types.HbData) error {
+	if processor.commitOffsetMode {
+		processor.markOffsetProcessed(hb.StreamId.ReaderId, *hb.TopicOffset)
+		return nil
+	}
+	return hb.CommitTopic()
+}
+
 func (processor *Processor) EnqueueHb(ctx context.Context, hb types.HbData) error {
 	// Skip all before we already processed
 	lastPosition := processor.lastPosition.Load()
@@ -372,7 +471,7 @@ func (processor *Processor) EnqueueHb(ctx context.Context, hb types.HbData) erro
 		zap.Uint32("reader_id", hb.StreamId.ReaderId),
 		zap.Int64("partition_id:", hb.StreamId.PartitionId),
 		zap.Bool("willSkip", types.NewPosition(hb).LessThan(lastPosition)))
-	if types.NewPosition(hb).LessThan(lastPosition) {
+	if !processor.commitOffsetMode && types.NewPosition(hb).LessThan(lastPosition) {
 		err := hb.CommitTopic()
 		if err != nil {
 			errMsg := fmt.Sprintf("EnqueueHb: Unable to commit topic")
@@ -384,6 +483,15 @@ func (processor *Processor) EnqueueHb(ctx context.Context, hb types.HbData) erro
 		return nil
 	}
 	fn := func() error {
+		if processor.commitOffsetMode {
+			processor.registerOffset(hb.StreamId.ReaderId, *hb.TopicOffset)
+			if types.NewPosition(hb).LessThan(lastPosition) {
+				xlog.Debug(ctx, "skip old hb",
+					zap.Uint64("step", hb.Step),
+					zap.Uint64("tx_id", hb.TxId))
+				return processor.completeHb(hb)
+			}
+		}
 		lastPosition := processor.lastPosition.Load()
 		if types.NewPosition(hb).LessThan(lastPosition) {
 			xlog.Warn(ctx, "suspicious behaviour, hb with timestamp less then our last committed timestamp has been "+
@@ -394,14 +502,21 @@ func (processor *Processor) EnqueueHb(ctx context.Context, hb types.HbData) erro
 				zap.Int64("partition_id", hb.StreamId.PartitionId),
 				zap.Uint64("our_step", lastPosition.Step),
 				zap.Uint64("our_tx_id", lastPosition.TxId))
-			err := hb.CommitTopic()
+			err := processor.completeHb(hb)
 			if err != nil {
 				errMsg := fmt.Sprintf("EnqueueHb: Unable to commit topic")
 				return types.ReturnError(ctx, err, errMsg)
 			}
 			return nil
 		}
-		return processor.hbTracker.AddHb(ctx, hb)
+		if !processor.commitOffsetMode {
+			return processor.hbTracker.AddHb(ctx, hb)
+		}
+		completed, err := processor.hbTracker.AddHbWithoutCompletion(ctx, hb)
+		if err != nil || completed == nil {
+			return err
+		}
+		return processor.completeHb(*completed)
 	}
 
 	processor.Enqueue(ctx, fn)
@@ -425,6 +540,14 @@ func (processor *Processor) SaveReplicationState(ctx context.Context, status str
 		})
 }
 
+func (processor *Processor) completeTx(tx types.TxData) error {
+	if !processor.commitOffsetMode {
+		return tx.CommitTopic()
+	}
+	processor.markOffsetProcessed(tx.TableId, *tx.TopicOffset)
+	return nil
+}
+
 func (processor *Processor) EnqueueTx(ctx context.Context, tx types.TxData) error {
 	// Skip all before we already processed
 	lastPosition := processor.lastPosition.Load()
@@ -432,7 +555,7 @@ func (processor *Processor) EnqueueTx(ctx context.Context, tx types.TxData) erro
 		zap.Uint64("txId", tx.TxId),
 		zap.Uint32("reader_id", tx.TableId),
 		zap.Bool("willSkip", (types.Position{tx.Step, tx.TxId}.LessThan(lastPosition))))
-	if (types.Position{tx.Step, tx.TxId}.LessThan(lastPosition)) {
+	if !processor.commitOffsetMode && (types.Position{tx.Step, tx.TxId}.LessThan(lastPosition)) {
 		err := tx.CommitTopic()
 		if err != nil {
 			errMsg := fmt.Sprintf("EnqueueTx: Unable to commit topic")
@@ -444,6 +567,15 @@ func (processor *Processor) EnqueueTx(ctx context.Context, tx types.TxData) erro
 		return nil
 	}
 	fn := func() error {
+		if processor.commitOffsetMode {
+			processor.registerOffset(tx.TableId, *tx.TopicOffset)
+			if (types.Position{tx.Step, tx.TxId}.LessThan(lastPosition)) {
+				xlog.Debug(ctx, "skip old tx",
+					zap.Uint64("step", tx.Step),
+					zap.Uint64("tx_id", tx.TxId))
+				return processor.completeTx(tx)
+			}
+		}
 		lastPosition := processor.lastPosition.Load()
 		if (types.Position{tx.Step, tx.TxId}.LessThan(lastPosition)) {
 			xlog.Warn(ctx, "suspicious behaviour, tx with timestamp less then our last committed timestamp has been"+
@@ -452,10 +584,13 @@ func (processor *Processor) EnqueueTx(ctx context.Context, tx types.TxData) erro
 				zap.Uint64("tx_id", tx.TxId),
 				zap.Uint64("our_step", lastPosition.Step),
 				zap.Uint64("our_tx_id", lastPosition.TxId))
-			err := tx.CommitTopic()
+			err := processor.completeTx(tx)
 			if err != nil {
 				errMsg := fmt.Sprintf("EnqueueTx: Unable to commit topic")
 				return types.ReturnError(ctx, err, errMsg)
+			}
+			if processor.commitOffsetMode {
+				return nil
 			}
 		}
 		processor.txQueue.PushTx(tx)
@@ -525,6 +660,9 @@ func (processor *Processor) doEvent(ctx context.Context) error {
 		default:
 			maxEventPerIteration = 0
 		}
+	}
+	if processor.commitOffsetMode {
+		processor.scheduleOffsetCommits(ctx)
 	}
 	return nil
 }
@@ -697,11 +835,17 @@ func (processor *Processor) DoInitialScan(ctx context.Context, dstTables []*dst_
 		}
 	}
 
-	for i := 0; i < len(txs); i++ {
-		err := txs[i].CommitTopic()
-		if err != nil {
-			errMsg := fmt.Sprintf("DoInitialScan: Unable to commit topic fot dataTx")
-			return nil, types.ReturnError(ctx, err, errMsg)
+	if processor.commitOffsetMode {
+		for i := 0; i < len(txs); i++ {
+			processor.markOffsetProcessed(txs[i].TableId, *txs[i].TopicOffset)
+		}
+	} else {
+		for i := 0; i < len(txs); i++ {
+			err := txs[i].CommitTopic()
+			if err != nil {
+				errMsg := fmt.Sprintf("DoInitialScan: Unable to commit topic fot dataTx")
+				return nil, types.ReturnError(ctx, err, errMsg)
+			}
 		}
 	}
 
@@ -709,12 +853,16 @@ func (processor *Processor) DoInitialScan(ctx context.Context, dstTables []*dst_
 		xlog.Debug(ctx, "commit hb in topic",
 			zap.Uint64("step", processor.initialScanPos.Step),
 			zap.Uint64("tx_id", processor.initialScanPos.TxId))
-		err := processor.initialScanPos.CommitTopic()
+		err := processor.completeHb(*processor.initialScanPos)
 
 		if err != nil {
 			errMsg := fmt.Sprintf("DoInitialScan: Unable to commit topic fot hb")
 			return nil, types.ReturnError(ctx, err, errMsg)
 		}
+	}
+
+	if processor.commitOffsetMode && (lastInitialScanIt || len(txs) != 0) {
+		processor.scheduleOffsetCommits(ctx)
 	}
 
 	return &ReplicationStats{requestStats.ModificationsCount,
@@ -811,21 +959,30 @@ func (processor *Processor) DoReplication(ctx context.Context, dstTables []*dst_
 
 	processor.lastPosition.Store(*types.NewPosition(batch.Hb))
 
-	for i := 0; i < len(batch.TxData); i++ {
-		err := batch.TxData[i].CommitTopic()
-		if err != nil {
-			errMsg := fmt.Sprintf("DoReplication: Unable to commit topic fot dataTx")
-			return nil, types.ReturnError(ctx, err, errMsg)
+	if processor.commitOffsetMode {
+		for i := 0; i < len(batch.TxData); i++ {
+			processor.markOffsetProcessed(batch.TxData[i].TableId, *batch.TxData[i].TopicOffset)
+		}
+	} else {
+		for i := 0; i < len(batch.TxData); i++ {
+			err := batch.TxData[i].CommitTopic()
+			if err != nil {
+				errMsg := fmt.Sprintf("DoReplication: Unable to commit topic fot dataTx")
+				return nil, types.ReturnError(ctx, err, errMsg)
+			}
 		}
 	}
 
 	xlog.Debug(ctx, "commit hb in topic",
 		zap.Uint64("step", batch.Hb.Step),
 		zap.Uint64("tx_id", batch.Hb.TxId))
-	err = batch.Hb.CommitTopic()
+	err = processor.completeHb(batch.Hb)
 	if err != nil {
 		errMsg := fmt.Sprintf("DoReplication: Unable to commit topic fot hb")
 		return nil, types.ReturnError(ctx, err, errMsg)
+	}
+	if processor.commitOffsetMode {
+		processor.scheduleOffsetCommits(ctx)
 	}
 	return &ReplicationStats{requestStats.ModificationsCount,
 		*types.NewPosition(batch.Hb),

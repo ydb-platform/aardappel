@@ -165,7 +165,7 @@ func doMain(ctx context.Context, config configInit.Config, srcDb *client.TopicCl
 		dlQueue = processor.NewDlQueue(ctx, topicWriter)
 	}
 
-	prc, err := processor.NewProcessor(ctx, topics, config.StateTable, dstDb.TableClient, config.InstanceId, config.KeyFilter)
+	prc, err := processor.NewProcessor(ctx, topics, config.StateTable, dstDb.TableClient, config.InstanceId, config.KeyFilter, config.CommitOffsetMode, config.MaxConcurrentOffsetCommits)
 	if err != nil {
 		xlog.Fatal(ctx, "Unable to create processor", zap.Error(err))
 	}
@@ -183,15 +183,23 @@ func doMain(ctx context.Context, config configInit.Config, srcDb *client.TopicCl
 
 	for i := 0; i < len(config.Streams); i++ {
 		cfgStream := &config.Streams[i]
-		startCb, updateCb := topicReader.MakeTopicReaderGuard(errChannel)
-		reader, err := srcDb.StartReader(config.Streams[i].Consumer, cfgStream.SrcTopic,
-			topicoptions.WithReaderGetPartitionStartOffset(startCb))
+		var readerOptions []topicoptions.ReaderOption
+		var updateCb topicReader.UpdateOffsetFunc
+		if !config.CommitOffsetMode {
+			var startCb topicoptions.GetPartitionStartOffsetFunc
+			startCb, updateCb = topicReader.MakeTopicReaderGuard(errChannel)
+			readerOptions = append(readerOptions, topicoptions.WithReaderGetPartitionStartOffset(startCb))
+		}
+		reader, err := srcDb.StartReader(config.Streams[i].Consumer, cfgStream.SrcTopic, readerOptions...)
 
 		if err != nil {
 			xlog.Fatal(ctx, "Unable to create topic reader",
 				zap.String("consumer", cfgStream.Consumer),
 				zap.String("src_topic", cfgStream.SrcTopic),
 				zap.Error(err))
+		}
+		if config.CommitOffsetMode {
+			prc.RegisterTopicReader(uint32(i), reader)
 		}
 		dstTables = append(dstTables,
 			dst_table.NewDstTable(dstDb.TableClient, cfgStream.DstTable, topics.TopicPartsCountMap[i].MonTag))
@@ -207,7 +215,7 @@ func doMain(ctx context.Context, config configInit.Config, srcDb *client.TopicCl
 			PartCount:       topics.TopicPartsCountMap[i].PartitionsCount,
 			ProblemStrategy: cfgStream.ProblemStrategy}
 		xlog.Debug(ctx, "Start reading")
-		go topicReader.ReadTopic(ctx, streamInfo, reader, prc, conflictHandler, updateCb, dlQueue, errChannel)
+		go topicReader.ReadTopic(ctx, streamInfo, reader, prc, conflictHandler, updateCb, dlQueue, errChannel, config.CommitOffsetMode)
 	}
 
 	lockExecutor := func(fn func(context.Context, table.Session, table.Transaction) error) error {

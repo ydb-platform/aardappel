@@ -29,6 +29,7 @@ type TxData struct {
 	OperationType TxOperationType
 	TableId       uint32 //local id of table in current replication
 	CommitTopic   func() error
+	TopicOffset   *TopicOffset
 }
 
 func (data TxData) IsUpdateOperation() bool {
@@ -45,12 +46,20 @@ type ElementaryStreamId struct {
 	PartitionId int64
 }
 
+type TopicOffset struct {
+	PartitionId int64
+	StartOffset int64
+	Offset      int64
+}
+
 // Hb data
 type HbData struct {
 	StreamId    ElementaryStreamId
 	Step        uint64
 	TxId        uint64
 	CommitTopic func() error
+
+	TopicOffset *TopicOffset
 }
 
 type Position struct {
