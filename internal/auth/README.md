@@ -4,8 +4,8 @@ This package creates YDB driver authentication options for aardappel.
 
 At the aardappel config level, each side of replication can use exactly one of:
 
-- `*_static_token`: a final YDB access token, used directly without OAuth2 token exchange.
-- `*_oauth2_file`: a credentials file used to configure OAuth2 token exchange.
+- `static_token`: a final YDB access token, used directly without OAuth2 token exchange.
+- `oauth2_file`: a credentials file used to configure OAuth2 token exchange.
 
 For OAuth2 credentials, aardappel currently supports two JSON file formats.
 
@@ -94,10 +94,10 @@ The optional exchanger endpoint is configured as:
 
 ## Endpoint Override
 
-The aardappel config can specify side-specific OAuth2 exchanger endpoints:
+Each cluster can specify its OAuth2 exchanger endpoint with `oauth2_endpoint`.
 
-- `src_oauth2_endpoint`
-- `dst_oauth2_endpoint`
+- `oauth2_endpoint`
+- `oauth2_endpoint`
 
 When a side-specific endpoint is set in aardappel config, it overrides the endpoint from the credentials file.
 

@@ -113,8 +113,8 @@ Main components:
   and manages the replication position;
 - `DstTable` reads the destination table schema and converts CDC values to its YDB
   types;
-- `Locker` prevents two processes with the same `instance_id` from writing the
-  replica concurrently.
+- `Locker` prevents two processes using the same destination state table and
+  `instance_id` from writing the replica concurrently.
 
 ## Replication algorithm
 
@@ -247,19 +247,33 @@ heartbeats older than the stored position are immediately committed without bein
 applied. If the stored state is not `OK`, automatic continuation is refused: fix
 the cause and recover the state deliberately first.
 
-### Multiple instances
+### Feed ownership and multiple pods
 
-Before reading source topics, the process acquires a lock in the row for its
-`instance_id`. Lock TTL is `2 × max_expected_heartbeat_interval`.
+A **feed** is a logical replication unit: its streams share one heartbeat quorum,
+checkpoint, and destination transaction. A **pod/process** is a worker that
+acquires ownership of an available feed from the configured `feeds` list.
+`instance_id` identifies persistent replication state and locking; it defaults to
+the feed's `id` and must remain stable across pod replacements.
 
-- `multiple_instances_mode: true`: standby processes keep waiting and may take
-  over after the lock is released;
-- `multiple_instances_mode: false`: the process stops waiting after a series of
-  failed checks, performed every 5 seconds.
+Multiple pods use the same configuration to run different feeds concurrently.
+Ownership is exclusive per feed: before opening CDC read sessions, a worker
+acquires the lock identified by the destination database, `state_table`, and
+effective `instance_id`. Lock TTL is
+`2 × max_expected_heartbeat_interval`. Only the lock owner reads and applies that
+feed. Scaling the pod count allows more feeds to run concurrently; a single feed's
+streams remain together under one owner, preserving their common quorum and
+atomic destination writes. Independent feeds have separate checkpoints and
+transactions.
 
-Processes for independent replication sets sharing one state table need different
-`instance_id` values. Active/standby processes for the same replication use the
-same `instance_id` and identical stream configuration.
+Workers without an available feed keep waiting until shutdown and may acquire a
+feed after its owner releases the lock or the lock expires. Set the top-level
+`wait_for_feed: false` to exit after approximately 50 seconds without acquiring
+ownership of any feed.
+
+Workers eligible to own the same feed must use the same destination state table,
+`instance_id`, and feed configuration, including consumers. Independent feeds
+sharing a destination state table need different `instance_id` values and separate
+consumers when reading the same source topics.
 
 ## Preparing YDB
 
@@ -321,75 +335,129 @@ The file is supplied through `-config`; the default is `config.yaml` in the curr
 directory. See the full example in
 [`cmd/aardappel/config.yaml`](cmd/aardappel/config.yaml).
 
+The first line must be `version: 2` to select the cluster/feed configuration format.
+
 Configuration is read once at startup. There is no automatic reload: changing
 connection strings, authentication, streams, queues, monitoring, or any other
 setting requires an application restart.
 
 ```yaml
-src_connection_string: "grpcs://source.example.net:2135/Root/source"
-src_client_balancer: true
-src_oauth2_file: "/run/secrets/source-oauth.json"
-# src_static_token: "..."
-# src_oauth2_endpoint: "https://sts.example.net/oauth2/token/exchange"
+version: 2
+clusters:
+  - id: source
+    connection_string: "grpcs://source.example.net:2135/Root/source"
+    client_balancer: true
+    oauth2_file: "/run/secrets/source-oauth.json"
+    # static_token: "..."
+    # oauth2_endpoint: "https://sts.example.net/oauth2/token/exchange"
+  - id: destination
+    connection_string: "grpcs://destination.example.net:2135/Root/destination"
+    client_balancer: true
+    oauth2_file: "/run/secrets/destination-oauth.json"
+    # static_token: "..."
+    # oauth2_endpoint: "https://sts.example.net/oauth2/token/exchange"
 
-dst_connection_string: "grpcs://destination.example.net:2135/Root/destination"
-dst_client_balancer: true
-dst_oauth2_file: "/run/secrets/destination-oauth.json"
-# dst_static_token: "..."
-# dst_oauth2_endpoint: "https://sts.example.net/oauth2/token/exchange"
+stream_sets:
+  - id: orders
+    streams:
+      - src_topic: "/Root/orders/orders_cdc"
+        dst_table: "/Root/orders_replica"
+        problem_strategy: "stop"
+        mon_tag: "orders"
 
-state_table: "/Root/aardappel_state"
-instance_id: "orders-replica"
-multiple_instances_mode: true
-max_expected_heartbeat_interval: 10
+feeds:
+  - id: "orders-replica"
+    source: source
+    destination: destination
+    state_table: "/Root/aardappel_state"
+    max_expected_heartbeat_interval: 10
+
+    streams:
+      - ref: orders
+        consumer: "aardappel"
+
+    # Optional:
+    # cmd_queue:
+    #   path: "/Root/aardappel_commands"
+    #   consumer: "aardappel"
+    # dead_letter_queue:
+    #   path: "/Root/aardappel_dlq"
+    # key_filter:
+    #   table_path: "/Root/aardappel_blocked_keys"
+
+wait_for_feed: true
 log_level: "info"
-
-streams:
-  - src_topic: "/Root/orders/orders_cdc"
-    consumer: "aardappel"
-    dst_table: "/Root/orders_replica"
-    problem_strategy: "stop"
-    mon_tag: "orders"
-
 mon_server:
   listen: ":8080"
-
-# Optional:
-# cmd_queue:
-#   path: "/Root/aardappel_commands"
-#   consumer: "aardappel"
-# dead_letter_queue:
-#   path: "/Root/aardappel_dlq"
-# key_filter:
-#   table_path: "/Root/aardappel_blocked_keys"
 ```
 
 ### Top-level settings
 
 | Setting | Required | Purpose |
 |---|---:|---|
-| `src_connection_string` | yes | Source YDB connection string. |
-| `src_client_balancer` | no | `false` enables `SingleConn`, useful when direct node access is unavailable. |
-| `src_oauth2_file` / `src_static_token` | yes | Exactly one source authentication method. |
-| `src_oauth2_endpoint` | no | Overrides the credentials-file token exchange endpoint. |
-| `dst_connection_string` | yes | Destination YDB connection string. |
-| `dst_client_balancer` | no | Equivalent destination setting. |
-| `dst_oauth2_file` / `dst_static_token` | yes | Exactly one destination authentication method. |
-| `dst_oauth2_endpoint` | no | Overrides the destination token exchange endpoint. |
-| `state_table` | yes | Destination service table for state and locking. |
-| `instance_id` | yes | Replication identifier and state table row key. |
-| `multiple_instances_mode` | no | Keeps a standby process waiting for the lock. |
-| `commit_offset_mode` | no | Uses `CommitOffset` instead of `Commit` to commit offsets in source CDC topics. |
-| `max_concurrent_offset_commits` | no | Maximum number of concurrent `CommitOffset` requests. |
-| `streams` | yes | CDC topic to destination table mappings. |
-| `max_expected_heartbeat_interval` | recommended | Missing-heartbeat warning threshold and lock TTL input. |
+| `clusters` | yes | Reusable cluster definitions referenced by feeds. |
+| `stream_sets` | no | Reusable stream mappings referenced by `feeds[].streams[].ref`. |
+| `feeds` | yes | Replication feeds. |
+| `wait_for_feed` | no | Defaults to `true`: keep waiting to acquire ownership of an available configured feed. When `false`, exit after approximately 50 seconds without acquiring feed ownership. |
 | `log_level` | no | `debug`, `info`, `warn`, or `error`. |
 | `mon_server` | no | Enables metrics and readiness HTTP endpoints. |
+
+### `clusters[]` settings
+
+Each cluster has a unique `id` and reusable connection and authentication settings.
+
+| Setting | Required | Purpose |
+|---|---:|---|
+| `id` | yes | Unique cluster ID referenced by feeds. |
+| `connection_string` | yes | Cluster YDB connection string. |
+| `client_balancer` | no | `false` enables `SingleConn`, useful when direct node access is unavailable. |
+| `oauth2_file` / `src_static_token` | yes | Exactly one source authentication method. |
+| `oauth2_endpoint` | no | Overrides the credentials-file token exchange endpoint. |
+
+### `stream_sets[]` settings
+
+Each set defines reusable stream mappings without consumers. Its `streams` entries
+use the fields described under `streams[]` below, except that `consumer` must be
+omitted and is supplied by each feed reference.
+
+| Setting | Required | Purpose |
+|---|---:|---|
+| `id` | yes | Unique stream set ID referenced by `feeds[].streams[].ref`. |
+| `streams` | yes | Nonempty list of topic-to-table mappings. |
+
+### `feeds[]` settings
+
+Each feed has a unique `id` and references its source and destination clusters.
+Set `instance_id` to the previous value to preserve replication state. It defaults
+to `id` and may be reused for different destinations. Execution locks use
+`instance_id` in the destination state table. Configuration loading warns when
+different feeds use the same effective `instance_id` and destination cluster ID.
+
+| Setting | Required | Purpose |
+|---|---:|---|
+| `id` | yes | Unique feed identifier used for monitoring. |
+| `instance_id` | no | Replication state, locking, key-filter, and conflict-command identifier; defaults to `id`. |
+| `source` / `destination` | yes | Cluster IDs for each feed. |
+| `state_table` | yes | Destination service table for state and locking. |
+| `commit_offset_mode` | no | Uses `CommitOffset` instead of `Commit` to commit offsets in source CDC topics. |
+| `max_concurrent_offset_commits` | no | Maximum number of concurrent `CommitOffset` requests. |
+| `streams` | yes | List of inline stream mappings or list of stream set references. |
+| `max_expected_heartbeat_interval` | recommended | Missing-heartbeat warning threshold and lock TTL input. |
 | `cmd_queue` | no | External `skip`/`apply` decisions for out-of-order messages. |
 | `dead_letter_queue` | no | Diagnostic topic for problem transactions. |
 | `key_filter` | no | Table of keys whose changes must not be applied. |
 
+### Stream set references in `feeds[].streams[]`
+
+| Setting | Required | Purpose |
+|---|---:|---|
+| `ref` | yes | ID of a declared stream set. |
+| `consumer` | yes | Consumer to use for every topic in the referenced set. |
+
 ### `streams[]` settings
+
+These fields describe inline feed streams and mappings inside `stream_sets[].streams`.
+The `consumer` field is required for inline feed streams and must be omitted in sets.
 
 | Setting | Required | Purpose |
 |---|---:|---|
@@ -399,9 +467,8 @@ mon_server:
 | `problem_strategy` | no | `stop` (default) or `continue`. |
 | `mon_tag` | no | `stream_tag` label; defaults to `src_topic`. |
 
-A consumer must be exclusive to one concurrently running Aardappel replication
-group. The same consumer name is fine in different CDC topics, but independent
-instances must not read the same consumer of the same topic.
+A consumer must be exclusive to one feed and the workers eligible to own it. The same consumer name is fine in different CDC topics, but independent
+feeds must not read the same consumer of the same topic.
 
 Stream order is not stored in the state table; only the common
 `(step_id, tx_id)` position is stored. After restart, configuration is reread and
@@ -415,7 +482,7 @@ new `instance_id`, consumer/state, or preliminary data alignment.
 
 ## Adding a new stream
 
-A new stream can be added to an existing replication instance, for example when a
+A new stream can be added to an existing feed, for example when a
 new source table must be replicated consistently with existing tables. It joins
 the same heartbeat quorum, and its changes are applied in the same destination
 transaction as changes from other streams.
@@ -424,7 +491,7 @@ The main task when adding a stream is to **align its position with the existing
 replication**. There are two independent position layers:
 
 - `step_id` and `tx_id` in `state_table` form one global virtual timestamp for all
-  streams of the instance. Aardappel uses it to filter out messages that it
+  streams of the feed. Aardappel uses it to filter out messages that it
   considers already processed;
 - each CDC consumer stores committed offsets separately for every topic partition.
   These offsets determine where physical reading of each stream resumes.
@@ -467,11 +534,11 @@ Use this procedure when the new table and CDC already contain data, but the enti
 history before the first common quorum is small enough for one destination
 transaction:
 
-1. Stop the active process and every standby process with the same `instance_id`.
+1. Stop all workers eligible to own the feed.
 2. Back up the current state row and record committed offsets for every consumer
    partition.
 3. Add the new stream to the configuration.
-4. Reset the global timestamp for this instance to `(0, 0)` so that Aardappel does
+4. Reset the global timestamp for this feed to `(0, 0)` so that Aardappel does
    not filter the new stream's historical messages using the old checkpoint:
 
    ```sql
@@ -492,11 +559,11 @@ at a common heartbeat quorum, after which replication continues normally.
 Use this procedure when the new CDC contains an initial scan that is too large for
 one destination request or transaction:
 
-1. Stop the active process and every standby process with the same `instance_id`.
+1. Stop all workers eligible to own the feed.
 2. Back up the current state row and record committed offsets for every consumer
    partition.
 3. Add the new stream to the configuration.
-4. Reset the global timestamp to `(0, 0)` and switch the instance to
+4. Reset the global timestamp to `(0, 0)` and switch the feed to
    `INITIAL_SCAN`:
 
    ```sql
@@ -515,24 +582,23 @@ position, switches `stage` to `RUN` automatically, and resumes normal replicatio
 The existing streams continue from their committed consumer offsets; the new
 stream reads and applies its initial-scan history and catches up with them.
 
-### Alternative: preliminary replication through a separate instance
+### Alternative: preliminary replication through a separate feed
 
 For a large table, the new stream can first be replicated through a temporary,
-separate Aardappel instance:
+separate feed running in its own process or pod group:
 
 1. Create a separate `instance_id`, state row, and consumer for the new stream.
-2. Replicate the new table until the temporary instance catches up.
-3. Stop both the main and temporary replication instances.
+2. Replicate the new table until the temporary feed catches up.
+3. Stop all eligible worker processes for both the main and temporary feeds.
 4. Add the new stream to the main configuration and perform the alignment from
-   Scenario 2: reset the main global timestamp to `(0, 0)` and start the main
-   instance.
+   Scenario 2: reset the main global timestamp to `(0, 0)` and restart the main feed.
 5. Reuse or align the consumer offset at the confirmed cutover point so that the
-   main instance continues from the data already applied by the temporary
+   main feed continues from the data already applied by the temporary
    replication.
 6. After checking the common quorum, lag, and destination data, remove the
-   temporary replication instance.
+   temporary feed and its processes.
 
-Never let the temporary and main instances read the same consumer concurrently.
+Never let the temporary and main feeds read the same consumer concurrently.
 
 ### Transition period and safety
 
@@ -549,20 +615,21 @@ completion using heartbeat/quorum, replication lag, logs, and an application-lev
 data comparison.
 
 > **Do not concurrently use one consumer of one CDC topic from independent
-> Aardappel instances.** YDB distributes partitions between read sessions: one
+> feeds.** YDB distributes partitions between read sessions: one
 > process receives one subset and another receives the rest. Each
 > `HeartBeatTracker` expects all partitions, so neither process can form its
 > expected full quorum correctly. Create separate consumers for independent
-> instances. Active/standby processes with the same `instance_id` may share a
-> consumer because the distributed lock permits only one process to read.
+> feeds. Workers eligible to own the same feed may share a consumer
+> because they use the same destination state row and distributed lock, which
+> permits only one process to read.
 
 ## Authentication
 
-Source and destination authentication are configured independently. Set
-**exactly one** method for each side:
+Authentication is configured independently for each cluster. Set
+**exactly one** method per cluster:
 
-- `*_static_token`: a final YDB access token without OAuth2 exchange;
-- `*_oauth2_file`: a JSON file describing OAuth2 token exchange.
+- `static_token`: a final YDB access token without OAuth2 exchange;
+- `oauth2_file`: a JSON file describing OAuth2 token exchange;
 
 Two credential-file formats are supported:
 
@@ -572,9 +639,7 @@ Two credential-file formats are supported:
    files or inline values. This is convenient for projected Kubernetes service
    account tokens.
 
-`src_oauth2_endpoint` and `dst_oauth2_endpoint` override the endpoint in their
-respective credentials file. See [`internal/auth/README.md`](internal/auth/README.md)
-for complete field descriptions and JSON examples.
+Each cluster’s `oauth2_endpoint` overrides the endpoint in its credentials file.
 
 ## Problem message handling
 
@@ -584,7 +649,7 @@ a lower position violates the expected stream order.
 ```mermaid
 flowchart TD
     O[Out-of-order change received] --> C{Is cmd_queue configured?}
-    C -->|yes| F{Command found for<br/>instance + topic + key + ts?}
+    C -->|yes| F{Command found for<br/>instance_id + topic + key + ts?}
     F -->|apply| A[Apply change]
     F -->|skip| S[Skip and commit offset]
     F -->|no| P{problem_strategy}
@@ -641,24 +706,26 @@ table path. Do not construct it manually without the same serializer.
 
 ## Monitoring
 
+All application metrics include `feed_id` from the configured feed `id`. Go runtime collector metrics remain process-scoped.
+
 When `mon_server.listen` is configured, the service exposes:
 
 - `GET /metrics`: Prometheus metrics;
 - `GET /readyz`: `200` after source topics and destination tables have been
   checked successfully, otherwise `503`.
 
-Multiple instances on one host need different listen ports.
+Multiple processes sharing one network namespace need different listen ports.
 
 | Metric | Type | Meaning |
 |---|---|---|
-| `modifications_count` | counter | Applied modifications. |
-| `modifications_count_per_table{stream_tag}` | counter | Modifications per stream. |
-| `commit_latency` | histogram | Destination commit duration in seconds. |
-| `quorum_waiting_latency` | histogram | Full heartbeat quorum wait in seconds. |
-| `request_size_bytes` | counter | Estimated cumulative YQL request size. |
-| `replication_lag_estimation` | gauge | Local time minus quorum `step`, seconds. |
-| `topic_without_hb{stream_tag}` | gauge | `1` when a heartbeat is late. |
-| `go_heap_allocated` | gauge | Current heap size in bytes. |
+| `modifications_count{feed_id}` | counter | Applied modifications. |
+| `modifications_count_per_table{feed_id,stream_tag}` | counter | Modifications per stream. |
+| `commit_latency{feed_id}` | histogram | Destination commit duration in seconds. |
+| `quorum_waiting_latency{feed_id}` | histogram | Full heartbeat quorum wait in seconds. |
+| `request_size_bytes{feed_id}` | counter | Estimated cumulative YQL request size. |
+| `replication_lag_estimation{feed_id}` | gauge | Local time minus quorum `step`, seconds. |
+| `topic_without_hb{feed_id,stream_tag}` | gauge | `1` when a heartbeat is late. |
+| `go_heap_allocated{feed_id}` | gauge | Current heap size in bytes. |
 
 `max_expected_heartbeat_interval` should exceed the changefeed
 `RESOLVED_TIMESTAMPS` interval. Exceeding it emits a warning and sets
@@ -688,11 +755,10 @@ context and releasing the lock.
 - Replication is one-way: source YDB → destination YDB.
 - Destination tables and consumers must exist before startup; only `state_table`
   is created automatically.
-- To preserve multi-table consistency, list all CDC streams in one Aardappel
-  instance.
+- To preserve multi-table consistency, put all required CDC streams in the same feed.
 - One consumer of one CDC topic must not be read concurrently by independent
-  Aardappel instances; YDB would split partitions between them. Use one consumer
-  per instance, except for active/standby protected by one lock and `instance_id`.
+  feeds; YDB would split partitions between them. Use one consumer
+  per feed; workers for that feed share it under the same lock.
 - Progress is limited by the slowest partition: no new quorum can form without its
   heartbeat.
 - Reordering unchanged `src_topic → dst_table` pairs is safe after restart.
@@ -821,8 +887,8 @@ YDB SDK назначает внутри неё отдельное чтение �
 - `Processor` выбирает согласованный batch, строит YQL для всех destination-таблиц
   и управляет позицией репликации;
 - `DstTable` читает схему целевой таблицы и преобразует CDC-значения в её YDB-типы;
-- `Locker` не позволяет двум процессам с одним `instance_id` одновременно писать
-  реплику.
+- `Locker` не позволяет двум процессам с одной destination state table и одним
+  `instance_id` одновременно писать реплику.
 
 ## Алгоритм репликации
 
@@ -954,19 +1020,32 @@ heartbeat с позицией меньше сохранённой сразу п�
 не выполняется: сначала требуется устранить причину и осознанно восстановить
 состояние.
 
-### Несколько экземпляров
+### Владение feed и несколько pod
 
-Перед чтением source-топиков процесс получает lock в строке своего `instance_id`.
-TTL lock равен `2 × max_expected_heartbeat_interval`.
+**Feed** — логическая единица репликации: его streams используют общий heartbeat
+quorum, checkpoint и destination-транзакцию. **Pod/процесс** — worker, получающий
+владение доступным feed из настроенного списка `feeds`. `instance_id`
+идентифицирует постоянное состояние репликации и lock; по умолчанию он равен `id`
+feed и должен сохраняться при замене pod.
 
-- `multiple_instances_mode: true` — standby-экземпляры продолжают ждать lock и
-  могут подхватить работу после его освобождения;
-- `multiple_instances_mode: false` — процесс прекращает ожидание после серии
-  неудачных проверок (проверка выполняется раз в 5 секунд).
+Несколько pod используют общую конфигурацию и выполняют разные feeds параллельно.
+Владение эксклюзивно для каждого feed: перед открытием CDC read sessions worker
+получает lock, определяемый destination-базой, `state_table` и эффективным
+`instance_id`. TTL lock равен `2 × max_expected_heartbeat_interval`.
+Только владелец lock читает и применяет этот feed. Увеличение числа pod позволяет
+выполнять больше feeds параллельно; streams одного feed остаются у одного
+владельца, сохраняя общий quorum и атомарную запись в destination. У независимых
+feeds отдельные checkpoints и транзакции.
 
-У процессов, реплицирующих независимые наборы данных через одну state table,
-должны быть разные `instance_id`. Для active/standby одной репликации, наоборот,
-используется одинаковый `instance_id` и одинаковая конфигурация потоков.
+Workers, которым не достался доступный feed, продолжают ждать до завершения и
+могут получить feed после освобождения lock его владельцем или истечения срока
+lock. Параметр верхнего уровня `wait_for_feed: false` завершает процесс примерно
+через 50 секунд, если не удалось получить владение ни одним feed.
+
+Workers, которые могут владеть одним и тем же feed, должны использовать одинаковые
+destination state table, `instance_id` и конфигурацию feed, включая consumers.
+Независимым feeds с общей destination state table нужны разные `instance_id` и
+отдельные consumers при чтении одних и тех же source-топиков.
 
 ## Подготовка YDB
 
@@ -1033,75 +1112,129 @@ source и только после этого начинайте записыва
 текущего каталога. Полный пример находится в
 [`cmd/aardappel/config.yaml`](cmd/aardappel/config.yaml).
 
+Первая строка должна быть `version: 2`, чтобы выбрать формат конфигурации с кластерами и feeds.
+
 Конфигурация читается один раз при старте. Автоматического reload файла нет:
 любое изменение connection strings, авторизации, streams, очередей, мониторинга
 или других параметров требует перезапуска приложения.
 
 ```yaml
-src_connection_string: "grpcs://source.example.net:2135/Root/source"
-src_client_balancer: true
-src_oauth2_file: "/run/secrets/source-oauth.json"
-# src_static_token: "..."               # альтернатива src_oauth2_file
-# src_oauth2_endpoint: "https://sts.example.net/oauth2/token/exchange"
+version: 2
+clusters:
+  - id: source
+    connection_string: "grpcs://source.example.net:2135/Root/source"
+    client_balancer: true
+    oauth2_file: "/run/secrets/source-oauth.json"
+    # static_token: "..."               # альтернатива oauth2_file
+    # oauth2_endpoint: "https://sts.example.net/oauth2/token/exchange"
+  - id: destination
+    connection_string: "grpcs://destination.example.net:2135/Root/destination"
+    client_balancer: true
+    oauth2_file: "/run/secrets/destination-oauth.json"
+    # static_token: "..."               # альтернатива oauth2_file
+    # oauth2_endpoint: "https://sts.example.net/oauth2/token/exchange"
 
-dst_connection_string: "grpcs://destination.example.net:2135/Root/destination"
-dst_client_balancer: true
-dst_oauth2_file: "/run/secrets/destination-oauth.json"
-# dst_static_token: "..."               # альтернатива dst_oauth2_file
-# dst_oauth2_endpoint: "https://sts.example.net/oauth2/token/exchange"
+stream_sets:
+  - id: orders
+    streams:
+      - src_topic: "/Root/orders/orders_cdc"
+        dst_table: "/Root/orders_replica"
+        problem_strategy: "stop"
+        mon_tag: "orders"
 
-state_table: "/Root/aardappel_state"
-instance_id: "orders-replica"
-multiple_instances_mode: true
-max_expected_heartbeat_interval: 10
+feeds:
+  - id: "orders-replica"
+    source: source
+    destination: destination
+    state_table: "/Root/aardappel_state"
+    max_expected_heartbeat_interval: 10
+
+    streams:
+      - ref: orders
+        consumer: "aardappel"
+
+    # Опционально:
+    # cmd_queue:
+    #   path: "/Root/aardappel_commands"
+    #   consumer: "aardappel"
+    # dead_letter_queue:
+    #   path: "/Root/aardappel_dlq"
+    # key_filter:
+    #   table_path: "/Root/aardappel_blocked_keys"
+
+wait_for_feed: true
 log_level: "info"
-
-streams:
-  - src_topic: "/Root/orders/orders_cdc"
-    consumer: "aardappel"
-    dst_table: "/Root/orders_replica"
-    problem_strategy: "stop"
-    mon_tag: "orders"
-
 mon_server:
   listen: ":8080"
-
-# Опционально:
-# cmd_queue:
-#   path: "/Root/aardappel_commands"
-#   consumer: "aardappel"
-# dead_letter_queue:
-#   path: "/Root/aardappel_dlq"
-# key_filter:
-#   table_path: "/Root/aardappel_blocked_keys"
 ```
 
 ### Параметры верхнего уровня
 
 | Параметр | Обязателен | Назначение |
 |---|---:|---|
-| `src_connection_string` | да | YDB connection string исходной базы. |
-| `src_client_balancer` | нет | `false` включает `SingleConn`; полезно, когда прямой доступ к узлам невозможен. |
-| `src_oauth2_file` / `src_static_token` | да | Ровно один способ авторизации source. |
-| `src_oauth2_endpoint` | нет | Переопределяет endpoint обмена токенов из credentials-файла. |
-| `dst_connection_string` | да | YDB connection string целевой базы. |
-| `dst_client_balancer` | нет | Аналогичный параметр для destination. |
-| `dst_oauth2_file` / `dst_static_token` | да | Ровно один способ авторизации destination. |
-| `dst_oauth2_endpoint` | нет | Переопределяет endpoint обмена токенов destination. |
-| `state_table` | да | Путь сервисной таблицы состояния и lock в destination. |
-| `instance_id` | да | Идентификатор репликации и ключ строки в state table. |
-| `multiple_instances_mode` | нет | Разрешает standby-процессу продолжать ожидание lock. |
-| `commit_offset_mode` | нет | Использует `CommitOffset` вместо `Commit` для коммита оффсетов исходных CDC-топиков. |
-| `max_concurrent_offset_commits` | нет | Максимальное число одновременных запросов `CommitOffset`. |
-| `streams` | да | Список соответствий CDC-топиков и destination-таблиц. |
-| `max_expected_heartbeat_interval` | рекомендуется | Порог предупреждения об отсутствующем heartbeat; также определяет TTL lock. |
+| `clusters` | да | Определения кластеров, на которые ссылаются feeds. |
+| `stream_sets` | нет | Наборы streams, на которые ссылается `feeds[].streams[].ref`. |
+| `feeds` | да | Потоки репликации. |
+| `wait_for_feed` | нет | По умолчанию `true`: ждать получения владения доступным feed из конфигурации. При `false` завершить процесс примерно через 50 секунд, если не удалось получить владение feed. |
 | `log_level` | нет | `debug`, `info`, `warn` или `error`. |
 | `mon_server` | нет | Включает HTTP endpoints метрик и readiness. |
+
+### Параметры `clusters[]`
+
+Каждый кластер имеет уникальный `id` и параметры подключения и авторизации.
+
+| Параметр | Обязателен | Назначение |
+|---|---:|---|
+| `id` | да | Уникальный ID кластера. |
+| `connection_string` | да | YDB connection string кластера. |
+| `client_balancer` | нет | `false` включает `SingleConn`; полезно, когда прямой доступ к узлам невозможен. |
+| `oauth2_file` / `dst_static_token` | да | Ровно один способ авторизации кластера. |
+| `oauth2_endpoint` | нет | Переопределяет endpoint обмена токенов кластера. |
+
+### Параметры `stream_sets[]`
+
+| Параметр | Обязателен | Назначение |
+|---|---:|---|
+| `id` | да | Уникальный ID набора, используемый в `feeds[].streams[].ref`. |
+| `streams` | да | Непустой список соответствий CDC-топиков и destination-таблиц. |
+
+### Параметры `feeds[]`
+
+Каждый feed имеет уникальный `id` и ссылается на исходный и целевой кластеры.
+Для сохранения прогресса задайте прежнее значение `instance_id`. По умолчанию
+используется `id`; для разных destinations можно использовать одинаковый
+`instance_id`. Блокировка использует `instance_id` в таблице состояния destination.
+При загрузке конфигурации выводится предупреждение, если разные feeds используют
+одинаковые эффективный `instance_id` и ID destination-кластера.
+
+| Параметр | Обязателен | Назначение |
+|---|---:|---|
+| `id` | да | Уникальный идентификатор feed для мониторинга. |
+| `instance_id` | нет | Идентификатор состояния, блокировки, key filter и команд конфликтов; по умолчанию `id`. |
+| `source` / `destination` | да | ID кластеров для feed. |
+| `state_table` | да | Путь сервисной таблицы состояния и lock в destination. |
+| `commit_offset_mode` | нет | Использует `CommitOffset` вместо `Commit` для коммита оффсетов исходных CDC-топиков. |
+| `max_concurrent_offset_commits` | нет | Максимальное число одновременных запросов `CommitOffset`. |
+| `streams` | да | Список inline streams или список ссылок на наборы streams. |
+| `max_expected_heartbeat_interval` | рекомендуется | Порог предупреждения об отсутствующем heartbeat; также определяет TTL lock. |
 | `cmd_queue` | нет | Топик внешних решений `skip`/`apply` для out-of-order сообщений. |
 | `dead_letter_queue` | нет | Топик для диагностических сообщений о проблемных транзакциях. |
 | `key_filter` | нет | Таблица ключей, изменения которых не нужно применять. |
 
+### Ссылки на наборы в `feeds[].streams[]`
+
+Ссылки задаются списком, даже для одного набора. Consumer ссылки применяется ко
+всем streams этого набора. Ссылка не может содержать поля inline stream.
+
+| Параметр | Обязателен | Назначение |
+|---|---:|---|
+| `ref` | да | ID объявленного набора streams. |
+| `consumer` | да | Consumer для каждого топика в указанном наборе. |
+
 ### Параметры `streams[]`
+
+Эти поля описывают inline streams feed и соответствия в `stream_sets[].streams`.
+Поле `consumer` обязательно для inline streams и должно быть опущено в наборах.
 
 | Параметр | Обязателен | Назначение |
 |---|---:|---|
@@ -1113,7 +1246,7 @@ mon_server:
 
 Consumer должен быть эксклюзивен для одного одновременно работающего контура
 Aardappel. Одинаковое имя consumer допустимо в разных CDC-топиках, но один и тот
-же consumer одного топика нельзя совместно читать независимыми экземплярами.
+же consumer одного топика нельзя совместно читать независимыми feeds.
 
 Порядок `streams` не сохраняется в state table: там хранится только общая позиция
 `(step_id, tx_id)`. После рестарта конфигурация перечитывается, и `TableId` заново
@@ -1128,7 +1261,7 @@ consumer/state или предварительное выравнивание д
 
 ## Добавление нового stream
 
-Новый stream можно добавить в существующий экземпляр репликации, например когда
+Новый stream можно добавить в существующий feed, например когда
 появилась ещё одна source-таблица, которую нужно согласованно реплицировать вместе
 с уже настроенными таблицами. Новый stream войдёт в тот же heartbeat quorum, а его
 изменения будут применяться в одной destination-транзакции с изменениями остальных
@@ -1138,7 +1271,7 @@ streams.
 репликацией**. При этом существуют два независимых уровня позиции:
 
 - `step_id` и `tx_id` в `state_table` образуют один глобальный virtual timestamp
-  всех streams экземпляра. По нему Aardappel фильтрует сообщения, которые считает
+  всех streams feed. По нему Aardappel фильтрует сообщения, которые считает
   уже обработанными;
 - каждый CDC consumer отдельно хранит committed offsets всех партиций топика. Они
   определяют, с какого физического сообщения продолжится чтение каждого stream.
@@ -1179,10 +1312,10 @@ flowchart TD
 Этот вариант подходит, если новая таблица и CDC уже содержат данные, но вся история
 до первого общего quorum достаточно мала для одной destination-транзакции:
 
-1. Остановите активный процесс и все standby-процессы с тем же `instance_id`.
+1. Остановите все workers, которые могут владеть этим feed.
 2. Сохраните текущую строку state и committed offsets всех партиций consumers.
 3. Добавьте новый stream в конфигурацию.
-4. Сбросьте глобальный timestamp экземпляра в `(0, 0)`, чтобы Aardappel не
+4. Сбросьте глобальный timestamp feed в `(0, 0)`, чтобы Aardappel не
    отфильтровал исторические сообщения нового stream по старому checkpoint:
 
    ```sql
@@ -1204,10 +1337,10 @@ streams выровняются на общем heartbeat quorum, после че
 Этот вариант нужен, если новый CDC содержит initial scan, который не помещается в
 один destination-запрос или транзакцию:
 
-1. Остановите активный процесс и все standby-процессы с тем же `instance_id`.
+1. Остановите все workers, которые могут владеть этим feed.
 2. Сохраните текущую строку state и committed offsets всех партиций consumers.
 3. Добавьте новый stream в конфигурацию.
-4. Сбросьте глобальный timestamp в `(0, 0)` и переключите экземпляр в
+4. Сбросьте глобальный timestamp в `(0, 0)` и переключите feed в
    `INITIAL_SCAN`:
 
    ```sql
@@ -1226,25 +1359,25 @@ streams выровняются на общем heartbeat quorum, после че
 Существующие streams продолжат чтение со своих committed consumer offsets, а новый
 stream прочитает и применит initial-scan историю и догонит их.
 
-### Альтернатива: предварительная репликация отдельным экземпляром
+### Альтернатива: предварительная репликация отдельным feed
 
-Большую новую таблицу можно сначала реплицировать временным отдельным экземпляром
-Aardappel:
+Большую новую таблицу можно сначала реплицировать временным отдельным feed
+в собственном процессе или группе pod:
 
 1. Создайте для нового stream отдельные `instance_id`, строку state и consumer.
-2. Реплицируйте новую таблицу до тех пор, пока временный экземпляр не догонит
+2. Реплицируйте новую таблицу до тех пор, пока временный feed не догонит
    source.
-3. Остановите основной и временный экземпляры репликации.
+3. Остановите процессы основного и временного feeds.
 4. Добавьте новый stream в основную конфигурацию и выполните выравнивание из
-   сценария 2: сбросьте глобальный timestamp основного экземпляра в `(0, 0)` и
+   сценария 2: сбросьте глобальный timestamp основного feed в `(0, 0)` и
    запустите его.
 5. Переиспользуйте либо выровняйте consumer offset по подтверждённой точке
-   переключения, чтобы основной экземпляр продолжил с данных, уже применённых
+   переключения, чтобы основной feed продолжил с данных, уже применённых
    временной репликацией.
-6. После проверки общего quorum, lag и destination-данных удалите временную
-   репликацию.
+6. После проверки общего quorum, lag и destination-данных удалите временный
+   feed и его процессы.
 
-Нельзя допускать, чтобы временный и основной экземпляры одновременно читали один
+Нельзя допускать, чтобы временный и основной feeds одновременно читали один
 consumer.
 
 ### Переходный период и безопасность
@@ -1263,20 +1396,21 @@ destination-таблица может быть заполнена только �
 сверке данных.
 
 > **Нельзя одновременно использовать одного consumer одного CDC-топика в разных
-> независимо работающих экземплярах Aardappel.** YDB распределит партиции между
+> независимых feeds.** YDB распределит партиции между
 > read sessions: один процесс получит одну часть партиций, другой — оставшуюся.
 > Каждый `HeartBeatTracker` при этом ожидает heartbeat от всех партиций, поэтому
-> полный quorum не сформируется корректно. Для независимых экземпляров создавайте
-> разные consumers. Active/standby с одним `instance_id` могут использовать общий
-> consumer, поскольку distributed lock допускает к чтению только один процесс.
+> полный quorum не сформируется корректно. Для независимых feeds создавайте
+> разные consumers. Workers одного feed могут использовать общий
+> consumer, поскольку используют одну строку состояния destination и общий
+> distributed lock, допускающий к чтению только один процесс.
 
 ## Авторизация
 
-Source и destination настраиваются независимо. Для каждой стороны необходимо
-задать **ровно один** вариант:
+Авторизация настраивается независимо для каждого кластера. Для каждого кластера
+необходимо задать **ровно один** вариант:
 
-- `*_static_token` — готовый YDB access token без OAuth2 exchange;
-- `*_oauth2_file` — JSON-файл параметров OAuth2 token exchange.
+- `static_token` — готовый YDB access token без OAuth2 exchange;
+- `oauth2_file` — JSON-файл параметров OAuth2 token exchange;
 
 Поддерживаются два формата credentials-файла:
 
@@ -1286,8 +1420,7 @@ Source и destination настраиваются независимо. Для к
    отдельного файла или задать значением. Это удобно для projected service account
    token в Kubernetes.
 
-Параметры `src_oauth2_endpoint` и `dst_oauth2_endpoint` имеют приоритет над
-endpoint внутри соответствующего credentials-файла.
+Параметр `oauth2_endpoint` кластера имеет приоритет над endpoint внутри его credentials-файла.
 
 Полное описание форматов, полей и примеры JSON находятся в
 [`internal/auth/README.md`](internal/auth/README.md).
@@ -1300,7 +1433,7 @@ Reader отслеживает последний heartbeat каждой парт
 ```mermaid
 flowchart TD
     O[Получено out-of-order изменение] --> C{Настроен cmd_queue?}
-    C -->|да| F{Найдена команда для<br/>instance + topic + key + ts?}
+    C -->|да| F{Найдена команда для<br/>instance_id + topic + key + ts?}
     F -->|apply| A[Применить изменение]
     F -->|skip| S[Пропустить и commit offset]
     F -->|нет| P{problem_strategy}
@@ -1343,7 +1476,7 @@ flowchart TD
 попадают в YQL destination-транзакции.
 
 Таблица фильтра создаётся оператором заранее и должна поддерживать чтение диапазона
-по `instance_id` и запись полей:
+по колонке `instance_id` (эффективный ID состояния feed) и запись полей:
 
 ```sql
 CREATE TABLE `/Root/aardappel_blocked_keys` (
@@ -1358,26 +1491,28 @@ CREATE TABLE `/Root/aardappel_blocked_keys` (
 
 ## Мониторинг
 
+Все метрики приложения содержат `feed_id` из поля `id` feed. Метрики Go runtime collector относятся к процессу.
+
 Если настроен `mon_server.listen`, сервис публикует:
 
 - `GET /metrics` — Prometheus metrics;
 - `GET /readyz` — `200` после успешной проверки source-топиков и destination-таблиц,
   до этого `503`.
 
-При нескольких экземплярах на одном адресе каждому нужен отдельный listen port.
+При нескольких процессах в одном сетевом пространстве каждому нужен отдельный listen port.
 
 Основные прикладные метрики:
 
 | Метрика | Тип | Значение |
 |---|---|---|
-| `modifications_count` | counter | Число применённых модификаций. |
-| `modifications_count_per_table{stream_tag}` | counter | Модификации по stream. |
-| `commit_latency` | histogram | Время commit destination-транзакции, секунды. |
-| `quorum_waiting_latency` | histogram | Ожидание полного heartbeat quorum, секунды. |
-| `request_size_bytes` | counter | Оценочный суммарный объём YQL-запросов. |
-| `replication_lag_estimation` | gauge | Разница локального времени и `step` quorum, секунды. |
-| `topic_without_hb{stream_tag}` | gauge | `1`, если heartbeat не пришёл в ожидаемый интервал. |
-| `go_heap_allocated` | gauge | Текущий объём heap, байты. |
+| `modifications_count{feed_id}` | counter | Число применённых модификаций. |
+| `modifications_count_per_table{feed_id,stream_tag}` | counter | Модификации по stream. |
+| `commit_latency{feed_id}` | histogram | Время commit destination-транзакции, секунды. |
+| `quorum_waiting_latency{feed_id}` | histogram | Ожидание полного heartbeat quorum, секунды. |
+| `request_size_bytes{feed_id}` | counter | Оценочный суммарный объём YQL-запросов. |
+| `replication_lag_estimation{feed_id}` | gauge | Разница локального времени и `step` quorum, секунды. |
+| `topic_without_hb{feed_id,stream_tag}` | gauge | `1`, если heartbeat не пришёл в ожидаемый интервал. |
+| `go_heap_allocated{feed_id}` | gauge | Текущий объём heap, байты. |
 
 `max_expected_heartbeat_interval` должен быть больше интервала
 `RESOLVED_TIMESTAMPS` changefeed. Его превышение создаёт warning и выставляет
@@ -1407,11 +1542,11 @@ context и освобождая lock.
 - Destination-таблицы и consumer создаются до запуска; автоматически создаётся
   только `state_table`.
 - Для согласованности нескольких таблиц все их CDC streams должны быть перечислены
-  в одном экземпляре Aardappel.
+  в одном feed.
 - Один consumer одного CDC-топика нельзя одновременно читать из разных независимо
-  работающих экземпляров Aardappel: YDB разделит партиции между ними. Используйте
-  отдельный consumer на экземпляр; исключение — защищённая общим lock пара
-  active/standby с одинаковым `instance_id`.
+  работающих feeds: YDB разделит партиции между ними. Используйте
+  отдельный consumer на feed; его workers используют общий consumer
+  под защитой одного lock.
 - Прогресс ограничен самой медленной партицией: без heartbeat от неё новый quorum
   сформировать нельзя.
 - Перестановка неизменных пар `src_topic → dst_table` допустима после рестарта.
