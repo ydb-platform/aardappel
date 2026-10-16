@@ -1,68 +1,83 @@
-## Connection string to the source cluster: grpcs://<ENDPOINT>/<DATABASE>
-src_connection_string: "grpcs://shared-1-grpc.ydb-global.svc.cluster.local:2135/testing-global/aardappel-test"
-## Whether aardappel use client balancer or not.
-## Set to false if direct connection between client and ydb nodes is not possible (k8s)
-## Set to true otherwise
-src_client_balancer: false
-## Source authorizatrion one of:
-##   src_oauth2_file - path to the oauth2 file
-##   src_static_token - YDB static token
-src_oauth2_file: "/opt/aardappel/secrets/src-sa/key.json"
-## OAuth2 token exchange endpoint for src credentials, overrides token-endpoint from src_oauth2_file when set.
-src_oauth2_endpoint: "https://tokens.svc.cluster.local:443/oauth2/token/exchange"
+version: 2
+## Reusable cluster definitions. IDs are referenced by feeds.
+clusters:
+  - id: source
+    ## Connection string to the source cluster: grpcs://<ENDPOINT>/<DATABASE>
+    connection_string: "grpcs://shared-1-grpc.ydb-global.svc.cluster.local:2135/testing-global/aardappel-test"
+    ## Whether aardappel use client balancer or not.
+    ## Set to false if direct connection between client and ydb nodes is not possible (k8s)
+    ## Set to true otherwise
+    client_balancer: false
+    ## Cluster authentication: exactly one of:
+    ##   oauth2_file - path to the oauth2 file
+    ##   static_token - YDB static token
+    oauth2_file: "/opt/aardappel/secrets/src-sa/key.json"
+    ## Overrides the endpoint from the OAuth2 credentials file when set.
+    oauth2_endpoint: "https://tokens.svc.cluster.local:443/oauth2/token/exchange"
 
-## Connection string to the destination cluster: grpcs://<ENDPOINT>/<DATABASE>
-dst_connection_string: "grpcs://shared-1-grpc.ydb-global.svc.cluster.local:2135/testing-global/aardappel-test"
-## Whether aardappel use client balancer or not.
-## Set to false if direct connection between client and ydb nodes is not possible (k8s)
-## Set to true otherwise
-dst_client_balancer: false
-## Destination authorizatrion one of:
-##   dst_oauth2_file - path to the oauth2 file
-##   dst_static_token - YDB static token
-dst_oauth2_file: "/opt/aardappel/secrets/dst-sa/key.json"
-## OAuth2 token exchange endpoint for dst credentials, overrides token-endpoint from dst_oauth2_file when set.
-dst_oauth2_endpoint: "https://tokens.svc.cluster.local:443/oauth2/token/exchange"
+  - id: destination
+    ## Connection string to the destination cluster: grpcs://<ENDPOINT>/<DATABASE>
+    connection_string: "grpcs://shared-1-grpc.ydb-global.svc.cluster.local:2135/testing-global/aardappel-test"
+    ## Whether aardappel use client balancer or not.
+    ## Set to false if direct connection between client and ydb nodes is not possible (k8s)
+    ## Set to true otherwise
+    client_balancer: false
+    ## Cluster authentication: exactly one of:
+    ##   oauth2_file - path to the oauth2 file
+    ##   static_token - YDB static token
+    oauth2_file: "/opt/aardappel/secrets/dst-sa/key.json"
+    ## Overrides the endpoint from the OAuth2 credentials file when set.
+    oauth2_endpoint: "https://tokens.svc.cluster.local:443/oauth2/token/exchange"
 
-## The table name to save replication state in the destination database
-## the table will be created in the destination database if absent.
-## Usually any name which is not clashed with existed tables.
-state_table: "aardappel_state"
-# Instance of replication process. Each aardappel process sharing the same state table should have a unique instance id to avoid mixing states.
-instance_id: "0"
-## Enable standby mode for additional instances with the same instance_id.
-## When enabled, one instance holds the lock and the others wait until it is released.
-multiple_instances_mode: false
-## Enable direct offset commits for each partition.
-## When disabled, Commit is called for each message individually.
-commit_offset_mode: false
-## Maximum number of concurrent offset commit requests when commit_offset_mode is enabled.
-max_concurrent_offset_commits: 1000
+## Reusable topic-to-table mappings; consumers are supplied by each feed.
+stream_sets:
+  - id: replica_tables
+    streams:
+    - src_topic: "producer1/cf1"         # Path of the cdc source topic for the 1st replica table
+      dst_table: "/Root/test/table1_rep" # Path of the 1st replica table (should exist and have compatible schema)
+      problem_strategy: "stop"           # What to do on some problem (stop, continue)
+    - src_topic: "producer2/cf1"         # Path of the cdc source topic for the 2nd replica table
+      dst_table: "/Root/test/table2_rep" # Path of the 2nd replica table (should exist and have compatible schema)
+      problem_strategy: "continue"       # What to do on some problem (stop, continue)
 
-## Replica tables and cdc sources. Transactions will be applied consistently between those tables. Multiple tables can be specified.
-streams:
-  - src_topic: "producer1/cf1"         # Path of the cdc source topic for the 1st replica table
-    consumer: "c1"                     # Topic consumer name in a cdc source topic for the 1st replica table
-    dst_table: "/Root/test/table1_rep" # Path of the 1st replica table (should exist and have compatible schema)
-    problem_strategy: "stop"           # What to do on some problem (stop, continue)
-  - src_topic: "producer2/cf1"         # Path of the cdc source topic for the 2nd replica table
-    consumer: "c1"                     # Topic consumer name in a cdc source topic for the 2nd replica table
-    dst_table: "/Root/test/table2_rep" # Path of the 2nd replica table (should exist and have compatible schema)
-    problem_strategy: "continue"       # What to do on some problem (stop, continue)
+## Replication feeds reference cluster IDs.
+feeds:
+    # Unique feed ID
+  - id: "0"
+    # Optional replication state and lock identifier; defaults to id.
+    # instance_id: "existing-replica"
+    source: source
+    destination: destination
+    ## The table name to save replication state in the destination database
+    ## the table will be created in the destination database if absent.
+    ## Usually any name which is not clashed with existed tables.
+    state_table: "aardappel_state"
+    ## Enable direct offset commits for each partition.
+    ## When disabled, Commit is called for each message individually.
+    commit_offset_mode: false
+    ## Maximum number of concurrent offset commit requests when commit_offset_mode is enabled.
+    max_concurrent_offset_commits: 1000
 
-## Max timeout to analise missed heartbeat in seconds. If we don't get quorum during this interval
-## the warning message will be written to the log.
-## Should be greater than CDC configured heartbeat interval
-max_expected_heartbeat_interval: 10
+    ## Reuse the mappings above with this feed's consumer.
+    streams:
+      - ref: replica_tables
+        consumer: "c1"
 
+    ## Max timeout to analyze missed heartbeat in seconds. If we don't get quorum during this interval
+    ## the warning message will be written to the log.
+    ## Should be greater than CDC configured heartbeat interval
+    max_expected_heartbeat_interval: 10
+
+    ## Command topic. In this topic you may post events to suggest aardappel what to do if it stops because cannot process some changes consistently
+    cmd_queue:
+      path: aardappel_command
+      consumer: c1
+
+    ## Dead letter queue. In this topic you may get events that haven't processed because they could not be applied consistently
+    dead_letter_queue:
+      path: dlq
+
+## Keep waiting until a feed is available for this instance to own (default true).
+wait_for_feed: true
 ## Log level (values "debug", "info", "warn", "error")
 log_level: "debug"
-
-## Command topic. In this topic you may post events to suggest aardappel what to do if it stops because cannot process some changes consistently
-cmd_queue:
-  path: aardappel_command
-  consumer: c1
-
-## Dead letter queue. In this topic you may get events that haven't processed because they could not be applied consistently
-dead_letter_queue:
-  path: dlq

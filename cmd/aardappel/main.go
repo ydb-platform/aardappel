@@ -116,10 +116,10 @@ func initReplicaStateTable(ctx context.Context, client *client.TableClient, stat
 	return err
 }
 
-func doDescribeTopics(ctx context.Context, config configInit.Config, srcDb *client.TopicClient) hb_tracker.TopicPartsCount {
+func doDescribeTopics(ctx context.Context, feed configInit.Feed, srcDb *client.TopicClient) hb_tracker.TopicPartsCount {
 	topics := hb_tracker.NewTopicPartsCount()
-	for i := 0; i < len(config.Streams); i++ {
-		cfgStream := &config.Streams[i]
+	for i := 0; i < len(feed.Streams); i++ {
+		cfgStream := &feed.Streams[i]
 
 		desc, err := srcDb.Describe(ctx, cfgStream.SrcTopic)
 		if err != nil {
@@ -137,60 +137,60 @@ func doDescribeTopics(ctx context.Context, config configInit.Config, srcDb *clie
 	return *topics
 }
 
-func doMain(ctx context.Context, config configInit.Config, srcDb *client.TopicClient, dstDb *client.YdbClient,
+func doMain(ctx context.Context, feed configInit.Feed, srcDb *client.TopicClient, dstDb *client.YdbClient,
 	locker *ydb_locker.Locker, mon pmon.Metrics, errChannel chan error) error {
-	topics := doDescribeTopics(ctx, config, srcDb)
+	topics := doDescribeTopics(ctx, feed, srcDb)
 
 	xlog.Debug(ctx, "All topics described",
 		zap.Int("total parts", topics.TotalPartsCount))
 
 	var conflictHandler processor.ConflictHandler
 
-	if config.CmdQueue != nil {
-		xlog.Debug(ctx, "Command queue present in config",
-			zap.String("path", config.CmdQueue.Path),
-			zap.String("consumer", config.CmdQueue.Consumer))
+	if feed.CmdQueue != nil {
+		xlog.Debug(ctx, "Command queue present in feed",
+			zap.String("path", feed.CmdQueue.Path),
+			zap.String("consumer", feed.CmdQueue.Consumer))
 		conflictHandler = processor.NewCmdQueueConflictHandler(
-			ctx, config.InstanceId, config.CmdQueue.Path, config.CmdQueue.Consumer, dstDb.TopicClient)
+			ctx, feed.InstanceId, feed.CmdQueue.Path, feed.CmdQueue.Consumer, dstDb.TopicClient)
 	}
 
 	var dlQueue *processor.DLQueue
-	if config.DLQueue != nil {
-		xlog.Info(ctx, "Dead letter queue present in config",
-			zap.String("path", config.DLQueue.Path))
-		topicWriter, err := dstDb.TopicClient.StartWriter(config.DLQueue.Path)
+	if feed.DLQueue != nil {
+		xlog.Info(ctx, "Dead letter queue present in feed",
+			zap.String("path", feed.DLQueue.Path))
+		topicWriter, err := dstDb.TopicClient.StartWriter(feed.DLQueue.Path)
 		if err != nil {
 			xlog.Fatal(ctx, "Unable to start writer for dlq", zap.Error(err))
 		}
 		dlQueue = processor.NewDlQueue(ctx, topicWriter)
 	}
 
-	prc, err := processor.NewProcessor(ctx, topics, config.StateTable, dstDb.TableClient, config.InstanceId, config.KeyFilter, config.CommitOffsetMode, config.MaxConcurrentOffsetCommits)
+	prc, err := processor.NewProcessor(ctx, topics, feed.StateTable, dstDb.TableClient, feed.InstanceId, feed.KeyFilter, feed.CommitOffsetMode, feed.MaxConcurrentOffsetCommits)
 	if err != nil {
 		xlog.Fatal(ctx, "Unable to create processor", zap.Error(err))
 	}
 
-	if config.MaxExpHbInterval != 0 {
-		xlog.Info(ctx, "start heartbeat tracker guard timer", zap.Uint32("timeout in seconds", config.MaxExpHbInterval))
+	if feed.MaxExpHbInterval != 0 {
+		xlog.Info(ctx, "start heartbeat tracker guard timer", zap.Uint32("timeout in seconds", feed.MaxExpHbInterval))
 		if reflect.ValueOf(mon).IsNil() {
-			prc.StartHbGuard(ctx, config.MaxExpHbInterval, nil)
+			prc.StartHbGuard(ctx, feed.MaxExpHbInterval, nil)
 		} else {
-			prc.StartHbGuard(ctx, config.MaxExpHbInterval, mon)
+			prc.StartHbGuard(ctx, feed.MaxExpHbInterval, mon)
 		}
 	}
 
 	var dstTables []*dst_table.DstTable
 
-	for i := 0; i < len(config.Streams); i++ {
-		cfgStream := &config.Streams[i]
+	for i := 0; i < len(feed.Streams); i++ {
+		cfgStream := &feed.Streams[i]
 		var readerOptions []topicoptions.ReaderOption
 		var updateCb topicReader.UpdateOffsetFunc
-		if !config.CommitOffsetMode {
+		if !feed.CommitOffsetMode {
 			var startCb topicoptions.GetPartitionStartOffsetFunc
 			startCb, updateCb = topicReader.MakeTopicReaderGuard(errChannel)
 			readerOptions = append(readerOptions, topicoptions.WithReaderGetPartitionStartOffset(startCb))
 		}
-		reader, err := srcDb.StartReader(config.Streams[i].Consumer, cfgStream.SrcTopic, readerOptions...)
+		reader, err := srcDb.StartReader(cfgStream.Consumer, cfgStream.SrcTopic, readerOptions...)
 
 		if err != nil {
 			xlog.Fatal(ctx, "Unable to create topic reader",
@@ -198,7 +198,7 @@ func doMain(ctx context.Context, config configInit.Config, srcDb *client.TopicCl
 				zap.String("src_topic", cfgStream.SrcTopic),
 				zap.Error(err))
 		}
-		if config.CommitOffsetMode {
+		if feed.CommitOffsetMode {
 			prc.RegisterTopicReader(uint32(i), reader)
 		}
 		dstTables = append(dstTables,
@@ -215,7 +215,7 @@ func doMain(ctx context.Context, config configInit.Config, srcDb *client.TopicCl
 			PartCount:       topics.TopicPartsCountMap[i].PartitionsCount,
 			ProblemStrategy: cfgStream.ProblemStrategy}
 		xlog.Debug(ctx, "Start reading")
-		go topicReader.ReadTopic(ctx, streamInfo, reader, prc, conflictHandler, updateCb, dlQueue, errChannel, config.CommitOffsetMode)
+		go topicReader.ReadTopic(ctx, streamInfo, reader, prc, conflictHandler, updateCb, dlQueue, errChannel, feed.CommitOffsetMode)
 	}
 
 	lockExecutor := func(fn func(context.Context, table.Session, table.Transaction) error) error {
@@ -236,13 +236,13 @@ func doMain(ctx context.Context, config configInit.Config, srcDb *client.TopicCl
 	return nil
 }
 
-func trySrcConnect(ctx context.Context, logger *zap.Logger, config configInit.Config, srcOpts []ydb.Option) bool {
-	srcDb, err := client.NewYdbClient(ctx, logger, config.SrcConnectionString, srcOpts...)
+func trySrcConnect(ctx context.Context, logger *zap.Logger, feed configInit.Feed, cluster configInit.Cluster, srcOpts []ydb.Option) bool {
+	srcDb, err := client.NewYdbClient(ctx, logger, cluster.ConnectionString, srcOpts...)
 	if err != nil {
 		xlog.Fatal(ctx, "Unable to connect to src cluster", zap.Error(err))
 	}
-	res := doDescribeTopics(ctx, config, srcDb.TopicClient)
-	if len(res.TopicPartsCountMap) == len(config.Streams) {
+	res := doDescribeTopics(ctx, feed, srcDb.TopicClient)
+	if len(res.TopicPartsCountMap) == len(feed.Streams) {
 		xlog.Debug(ctx, "Initial check for YDB src connection passed")
 		return true
 	} else {
@@ -250,9 +250,9 @@ func trySrcConnect(ctx context.Context, logger *zap.Logger, config configInit.Co
 	}
 }
 
-func tryDstConnect(ctx context.Context, config configInit.Config, tableClient *client.TableClient) bool {
-	for i := 0; i < len(config.Streams); i++ {
-		cfgStream := &config.Streams[i]
+func tryDstConnect(ctx context.Context, feed configInit.Feed, tableClient *client.TableClient) bool {
+	for i := 0; i < len(feed.Streams); i++ {
+		cfgStream := &feed.Streams[i]
 		_, err := dst_table.DescribeTable(ctx, tableClient, cfgStream.DstTable)
 		if err != nil {
 			return false
@@ -282,6 +282,11 @@ func main() {
 	config, err := configInit.InitConfig(ctx, confPath)
 	if err != nil {
 		log.Fatal(ctx, "Unable to initialize config: ", err)
+	}
+
+	// FIXME: Feed selection/locking will be implemented separately.
+	if len(config.Feeds) != 1 {
+		log.Fatal("multiple feeds are not supported yet; configure exactly one feed")
 	}
 
 	// Setup logging
@@ -325,16 +330,27 @@ func main() {
 			zap.String("config", confStr))
 	}
 
+	feed := config.Feeds[0]
+
 	var mon *pmon.PromMon
 	if config.MonServer != nil {
-		mon = pmon.NewPromMon(ctx, config.MonServer)
+		mon = pmon.NewPromMon(ctx, config.MonServer, feed.ID)
 		defer mon.Stop()
 	}
 
+	source, err := config.ClusterByID(feed.Source)
+	if err != nil {
+		log.Fatal(err)
+	}
+	destination, err := config.ClusterByID(feed.Destination)
+	if err != nil {
+		log.Fatal(err)
+	}
+
 	srcOpts, err := auth.CreateYdbDriverAuthOptions(auth.AuthConfig{
-		CredentialsFile:   config.SrcOAuthFile,
-		StaticToken:       config.SrcStaticToken,
-		ExchangerEndpoint: config.SrcOAuthEndpoint,
+		CredentialsFile:   source.OAuthFile,
+		StaticToken:       source.StaticToken,
+		ExchangerEndpoint: source.OAuthEndpoint,
 	})
 	if err != nil {
 		xlog.Fatal(ctx, "Unable to create auth option for src",
@@ -342,43 +358,43 @@ func main() {
 	}
 
 	dstOpts, err := auth.CreateYdbDriverAuthOptions(auth.AuthConfig{
-		CredentialsFile:   config.DstOAuthFile,
-		StaticToken:       config.DstStaticToken,
-		ExchangerEndpoint: config.DstOAuthEndpoint,
+		CredentialsFile:   destination.OAuthFile,
+		StaticToken:       destination.StaticToken,
+		ExchangerEndpoint: destination.OAuthEndpoint,
 	})
 	if err != nil {
 		xlog.Fatal(ctx, "Unable to create auth option for dst",
 			zap.Error(err))
 	}
 
-	if config.SrcClientBalancer == false {
+	if source.ClientBalancer == false {
 		srcOpts = append(srcOpts, ydb.WithBalancer(balancers.SingleConn()))
 	}
 
-	if config.DstClientBalancer == false {
+	if destination.ClientBalancer == false {
 		dstOpts = append(dstOpts, ydb.WithBalancer(balancers.SingleConn()))
 	}
 
-	dstDb, err := client.NewYdbClient(ctx, logger, config.DstConnectionString, dstOpts...)
+	dstDb, err := client.NewYdbClient(ctx, logger, destination.ConnectionString, dstOpts...)
 	if err != nil {
 		xlog.Fatal(ctx, "Unable to connect to dst cluster", zap.Error(err))
 	}
 	xlog.Debug(ctx, "YDB dst opened")
 
-	err = createReplicaStateTable(ctx, dstDb.TableClient, config.StateTable)
+	err = createReplicaStateTable(ctx, dstDb.TableClient, feed.StateTable)
 	if err != nil {
 		xlog.Fatal(ctx, "Replication startup failed",
-			zap.String("unable to create table", config.StateTable), zap.Error(err))
+			zap.String("unable to create table", feed.StateTable), zap.Error(err))
 	}
 
-	err = initReplicaStateTable(ctx, dstDb.TableClient, config.StateTable, config.InstanceId)
+	err = initReplicaStateTable(ctx, dstDb.TableClient, feed.StateTable, feed.InstanceId)
 	if err != nil {
 		xlog.Fatal(ctx, "Replication startup failed",
-			zap.String("unable to init table", config.StateTable), zap.Error(err))
+			zap.String("unable to init table", feed.StateTable), zap.Error(err))
 	}
 
-	if trySrcConnect(ctx, logger, config, srcOpts) {
-		if tryDstConnect(ctx, config, dstDb.TableClient) {
+	if trySrcConnect(ctx, logger, feed, source, srcOpts) {
+		if tryDstConnect(ctx, feed, dstDb.TableClient) {
 			if mon != nil {
 				mon.SetCompleted()
 			}
@@ -392,13 +408,13 @@ func main() {
 	hostname, _ := os.Hostname()
 	owner := fmt.Sprintf("lock_%s_%s", hostname, uuid.New().String())
 
-	reqBuilder := GetLockerRequestBuilder(config.StateTable)
+	reqBuilder := GetLockerRequestBuilder(feed.StateTable)
 	lockStorage := ydb_locker.YdbLockStorage{Db: dstDb.GetDriver(), ReqBuilder: reqBuilder}
-	lockTtl := time.Duration(config.MaxExpHbInterval*2) * time.Second
-	locker := ydb_locker.NewLocker(&lockStorage, config.InstanceId, owner, lockTtl)
+	lockTtl := time.Duration(feed.MaxExpHbInterval*2) * time.Second
+	locker := ydb_locker.NewLocker(&lockStorage, feed.InstanceId, owner, lockTtl)
 	lockChannel := locker.LockerContext(ctx)
 	cont := true
-	var lockErrCnt uint32
+	feedWaitChecks := 0
 	for cont {
 		select {
 		case lockCtx, ok := <-lockChannel:
@@ -407,13 +423,12 @@ func main() {
 				cont = false
 				continue
 			}
-			lockErrCnt = 0
-			srcDb, err := client.NewYdbClient(lockCtx, logger, config.SrcConnectionString, srcOpts...)
+			srcDb, err := client.NewYdbClient(lockCtx, logger, source.ConnectionString, srcOpts...)
 			if err != nil {
 				xlog.Fatal(ctx, "Unable to connect to src cluster", zap.Error(err))
 			}
 			xlog.Debug(ctx, "YDB src opened")
-			err = doMain(lockCtx, config, srcDb.TopicClient, dstDb, locker, mon, errChannel)
+			err = doMain(lockCtx, feed, srcDb.TopicClient, dstDb, locker, mon, errChannel)
 			xlog.Info(ctx, "Finished with error, stopping aardappel....", zap.String("error", err.Error()))
 			cancel()
 			cont = false
@@ -426,20 +441,18 @@ func main() {
 				xlog.Fatal(ctx, "Timeout waiting for lock to release")
 			}
 		case <-time.After(defaultLockCheckInterval):
-			if !config.MultipleInstancesMode && lockErrCnt == 10 {
-				cont = false
-				continue
-			}
-			if !config.MultipleInstancesMode {
-				lockErrCnt++
+			if !config.WaitForFeed {
+				feedWaitChecks++
+				if feedWaitChecks >= 10 {
+					xlog.Info(ctx, "No feed ownership acquired, exiting worker")
+					cancel()
+					cont = false
+					continue
+				}
 			}
 			xlog.Info(ctx, "unable to get lock, other instance of aardappel is running")
 		}
 	}
 
-	if lockErrCnt != 0 {
-		xlog.Error(ctx, "aardappel has been shutted down after multiple getting lock errors")
-	} else {
-		xlog.Info(ctx, "aardappel has been shutted down successfully ")
-	}
+	xlog.Info(ctx, "aardappel has been shut down successfully")
 }
