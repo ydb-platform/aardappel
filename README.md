@@ -256,6 +256,7 @@ acquires ownership of an available feed from the configured `feeds` list.
 the feed's `id` and must remain stable across pod replacements.
 
 Multiple pods use the same configuration to run different feeds concurrently.
+Each worker checks feeds in randomized order and runs at most one feed.
 Ownership is exclusive per feed: before opening CDC read sessions, a worker
 acquires the lock identified by the destination database, `state_table`, and
 effective `instance_id`. Lock TTL is

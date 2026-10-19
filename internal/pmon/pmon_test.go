@@ -39,12 +39,8 @@ func findField(resBody []byte, pattern []byte) int {
 
 func TestMonCount(t *testing.T) {
 	ctx := context.Background()
-	p := pmon.NewPromMon(ctx, &config.MonServer{":8080"}, "test-feed")
-	defer p.Stop()
-	p.ModificationCount(123)
-	p.ModificationCountFromTopic(456, "tag_1")
-	p.TopicWithoutHB(false, "tag_1")
-	p.TopicWithoutHB(true, "tag_2")
+	server := pmon.NewPromServer(ctx, &config.MonServer{":8080"})
+	defer server.Stop()
 
 	repeat := 10
 
@@ -58,18 +54,37 @@ func TestMonCount(t *testing.T) {
 			}
 		}
 		assert.Equal(t, res.StatusCode, 503)
+		res.Body.Close()
 		break
 	}
 
+	res, err := http.Get("http://127.0.0.1:8080/metrics")
+	if !assert.NoError(t, err) {
+		return
+	}
+	idleBody, err := io.ReadAll(res.Body)
+	res.Body.Close()
+	assert.NoError(t, err)
+	assert.Equal(t, http.StatusOK, res.StatusCode)
+	assert.Contains(t, string(idleBody), "go_goroutines")
+	assert.NotContains(t, string(idleBody), "feed_id")
+
+	p := server.NewFeed("test-feed")
+	p.ModificationCount(123)
+	p.ModificationCountFromTopic(456, "tag_1")
+	p.TopicWithoutHB(false, "tag_1")
+	p.TopicWithoutHB(true, "tag_2")
 	p.SetCompleted()
 
-	res, _ := http.Get("http://127.0.0.1:8080/readyz")
+	res, _ = http.Get("http://127.0.0.1:8080/readyz")
 	assert.Equal(t, res.StatusCode, 200)
+	res.Body.Close()
 
-	res, err := http.Get("http://127.0.0.1:8080/metrics")
+	res, err = http.Get("http://127.0.0.1:8080/metrics")
 	assert.NoError(t, err)
 
 	resBody, err := io.ReadAll(res.Body)
+	res.Body.Close()
 	assert.NoError(t, err)
 	fmt.Fprintf(os.Stderr, "%v\n", string(resBody))
 
