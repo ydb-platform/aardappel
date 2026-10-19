@@ -6,13 +6,14 @@ import (
 	"bytes"
 	"context"
 	"fmt"
-	"github.com/stretchr/testify/assert"
 	"io"
 	"net/http"
 	"os"
 	"strconv"
 	"testing"
 	"time"
+
+	"github.com/stretchr/testify/assert"
 )
 
 func findField(resBody []byte, pattern []byte) int {
@@ -38,7 +39,7 @@ func findField(resBody []byte, pattern []byte) int {
 
 func TestMonCount(t *testing.T) {
 	ctx := context.Background()
-	p := pmon.NewPromMon(ctx, &config.MonServer{":8080"})
+	p := pmon.NewPromMon(ctx, &config.MonServer{":8080"}, "test-feed")
 	defer p.Stop()
 	p.ModificationCount(123)
 	p.ModificationCountFromTopic(456, "tag_1")
@@ -72,16 +73,16 @@ func TestMonCount(t *testing.T) {
 	assert.NoError(t, err)
 	fmt.Fprintf(os.Stderr, "%v\n", string(resBody))
 
-	pattern_mc := []byte("modifications_count")
+	pattern_mc := []byte(`modifications_count{feed_id="test-feed"}`)
 	val_mc := findField(resBody, pattern_mc)
 
-	pattern_mc_per_table := []byte("modifications_count_per_table{stream_tag=\"tag_1\"}")
+	pattern_mc_per_table := []byte("modifications_count_per_table{feed_id=\"test-feed\",stream_tag=\"tag_1\"}")
 	val_mc_per_table := findField(resBody, pattern_mc_per_table)
 
-	patterm_nh_per_table_1 := []byte("topic_without_hb{stream_tag=\"tag_1\"}")
+	patterm_nh_per_table_1 := []byte("topic_without_hb{feed_id=\"test-feed\",stream_tag=\"tag_1\"}")
 	val_nh_per_table_1 := findField(resBody, patterm_nh_per_table_1)
 
-	patterm_nh_per_table_2 := []byte("topic_without_hb{stream_tag=\"tag_2\"}")
+	patterm_nh_per_table_2 := []byte("topic_without_hb{feed_id=\"test-feed\",stream_tag=\"tag_2\"}")
 	val_nh_per_table_2 := findField(resBody, patterm_nh_per_table_2)
 
 	assert.Equal(t, val_mc, 123)

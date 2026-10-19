@@ -7,8 +7,8 @@ import (
 	"context"
 	"errors"
 	"github.com/prometheus/client_golang/prometheus"
-	"github.com/prometheus/client_golang/prometheus/promhttp"
 	"github.com/prometheus/client_golang/prometheus/collectors"
+	"github.com/prometheus/client_golang/prometheus/promhttp"
 	"go.uber.org/zap"
 	"net/http"
 	"sync"
@@ -36,18 +36,18 @@ type MonPerTable struct {
 	topicWithoutHb            prometheus.Gauge
 }
 
-func CreatePerTableCounters(tag string, reg *prometheus.Registry) *MonPerTable {
+func CreatePerTableCounters(tag string, reg *prometheus.Registry, feedID string) *MonPerTable {
 	m := &MonPerTable{
 		modificationsCountByTopic: prometheus.NewCounter(prometheus.CounterOpts{
 			Name:        "modifications_count_per_table",
 			Help:        "Total count of modifications per table on the destination cluster.",
-			ConstLabels: prometheus.Labels{"stream_tag": tag},
+			ConstLabels: prometheus.Labels{"feed_id": feedID, "stream_tag": tag},
 		}),
 
 		topicWithoutHb: prometheus.NewGauge(prometheus.GaugeOpts{
 			Name:        "topic_without_hb",
 			Help:        "topic where hb was not recieved during interval",
-			ConstLabels: prometheus.Labels{"stream_tag": tag},
+			ConstLabels: prometheus.Labels{"feed_id": feedID, "stream_tag": tag},
 		}),
 	}
 
@@ -59,6 +59,7 @@ func CreatePerTableCounters(tag string, reg *prometheus.Registry) *MonPerTable {
 
 type PromMon struct {
 	reg                  *prometheus.Registry
+	feedID               string
 	modificationsCount   prometheus.Counter
 	commitLatency        prometheus.Histogram
 	requestSize          prometheus.Counter
@@ -80,39 +81,46 @@ func lazyMetrics(mon *PromMon, tag string) *MonPerTable {
 	if ok {
 		return counter
 	} else {
-		tmp := CreatePerTableCounters(tag, mon.reg)
+		tmp := CreatePerTableCounters(tag, mon.reg, mon.feedID)
 		mon.perTableCounters[tag] = tmp
 		return tmp
 	}
 }
 
-func NewMetrics(reg *prometheus.Registry) *PromMon {
+func NewMetrics(reg *prometheus.Registry, feedID string) *PromMon {
 	m := &PromMon{
+		feedID: feedID,
 		modificationsCount: prometheus.NewCounter(prometheus.CounterOpts{
-			Name: "modifications_count",
-			Help: "Total count of modifications on the destination cluster.",
+			ConstLabels: prometheus.Labels{"feed_id": feedID},
+			Name:        "modifications_count",
+			Help:        "Total count of modifications on the destination cluster.",
 		}),
 		commitLatency: prometheus.NewHistogram(prometheus.HistogramOpts{
-			Name:    "commit_latency",
-			Help:    "Latency of commit changes on the destination cluster (seconds).",
-			Buckets: prometheus.DefBuckets,
+			ConstLabels: prometheus.Labels{"feed_id": feedID},
+			Name:        "commit_latency",
+			Help:        "Latency of commit changes on the destination cluster (seconds).",
+			Buckets:     prometheus.DefBuckets,
 		}),
 		requestSize: prometheus.NewCounter(prometheus.CounterOpts{
-			Name: "request_size_bytes",
-			Help: "Size of request on the destination cluster (bytes).",
+			ConstLabels: prometheus.Labels{"feed_id": feedID},
+			Name:        "request_size_bytes",
+			Help:        "Size of request on the destination cluster (bytes).",
 		}),
 		quorumWaitingLatency: prometheus.NewHistogram(prometheus.HistogramOpts{
-			Name:    "quorum_waiting_latency",
-			Help:    "Latency of waiting quorum changes on the destination cluster (seconds).",
-			Buckets: prometheus.DefBuckets,
+			ConstLabels: prometheus.Labels{"feed_id": feedID},
+			Name:        "quorum_waiting_latency",
+			Help:        "Latency of waiting quorum changes on the destination cluster (seconds).",
+			Buckets:     prometheus.DefBuckets,
 		}),
 		heapAllocated: prometheus.NewGauge(prometheus.GaugeOpts{
-			Name: "go_heap_allocated",
-			Help: "Size is bytes of allocated heap objects",
+			ConstLabels: prometheus.Labels{"feed_id": feedID},
+			Name:        "go_heap_allocated",
+			Help:        "Size is bytes of allocated heap objects",
 		}),
 		replicationLagEst: prometheus.NewGauge(prometheus.GaugeOpts{
-			Name: "replication_lag_estimation",
-			Help: "The time difference between coordination time of quorum hb and local time",
+			ConstLabels: prometheus.Labels{"feed_id": feedID},
+			Name:        "replication_lag_estimation",
+			Help:        "The time difference between coordination time of quorum hb and local time",
 		}),
 	}
 	reg.MustRegister(m.modificationsCount)
@@ -140,7 +148,7 @@ func (h *khzHandler) ServeHTTP(writer http.ResponseWriter, req *http.Request) {
 	}
 }
 
-func NewPromMon(ctx context.Context, config *config.MonServer) *PromMon {
+func NewPromMon(ctx context.Context, config *config.MonServer, feedID string) *PromMon {
 	reg := prometheus.NewRegistry()
 
 	reg.MustRegister(
@@ -151,7 +159,7 @@ func NewPromMon(ctx context.Context, config *config.MonServer) *PromMon {
 		),
 	)
 
-	p := NewMetrics(reg)
+	p := NewMetrics(reg, feedID)
 	p.perTableCounters = make(map[string]*MonPerTable)
 	p.reg = reg
 
