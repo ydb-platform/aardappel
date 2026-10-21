@@ -1,15 +1,13 @@
 package main
 
 import (
-	"aardappel/internal/auth"
 	configInit "aardappel/internal/config"
 	"aardappel/internal/dst_table"
-	"aardappel/internal/hb_tracker"
+	feedRuntime "aardappel/internal/feed"
 	"aardappel/internal/pmon"
 	processor "aardappel/internal/processor"
 	topicReader "aardappel/internal/reader"
 	"aardappel/internal/types"
-	"aardappel/internal/util/misc"
 	"aardappel/internal/util/xlog"
 	client "aardappel/internal/util/ydb"
 	"aardappel/internal/util/ydb/ydb_locker"
@@ -25,26 +23,10 @@ import (
 	"syscall"
 	"time"
 
-	"github.com/google/uuid"
-	"github.com/ydb-platform/ydb-go-genproto/protos/Ydb"
-	"github.com/ydb-platform/ydb-go-sdk/v3"
-	"github.com/ydb-platform/ydb-go-sdk/v3/balancers"
 	"github.com/ydb-platform/ydb-go-sdk/v3/table"
-	ydbTypes "github.com/ydb-platform/ydb-go-sdk/v3/table/types"
 	"github.com/ydb-platform/ydb-go-sdk/v3/topic/topicoptions"
 	"go.uber.org/zap"
 )
-
-const defaultLockCheckInterval = 5 * time.Second
-
-func GetLockerRequestBuilder(tableName string) *ydb_locker.LockRequestBuilderImpl {
-	return &ydb_locker.LockRequestBuilderImpl{
-		TableName:          tableName,
-		LockNameColumnName: "id",
-		OwnerColumnName:    "lock_owner",
-		DeadlineColumnName: "lock_deadline",
-	}
-}
 
 func EstimateReplicationLagSec(pos types.Position) float32 {
 	ts := time.Now().UTC()
@@ -88,58 +70,9 @@ func DoReplication(ctx context.Context, prc *processor.Processor, dstTables []*d
 	return nil
 }
 
-func createReplicaStateTable(ctx context.Context, client *client.TableClient, stateTable string) error {
-	query := fmt.Sprintf("CREATE TABLE IF NOT EXISTS %v (id Utf8, step_id Uint64, tx_id Uint64, state Utf8, stage Utf8, "+
-		"last_msg Utf8, lock_owner Utf8, lock_deadline Timestamp, PRIMARY KEY(id))", stateTable)
-	return client.Do(ctx, func(ctx context.Context, s table.Session) error {
-		return s.ExecuteSchemeQuery(ctx, query, nil)
-	})
-}
-
-func initReplicaStateTable(ctx context.Context, client *client.TableClient, stateTable string, instanceId string) error {
-	param := table.NewQueryParameters(
-		table.ValueParam("$instanceId", ydbTypes.UTF8Value(instanceId)),
-		table.ValueParam("$state", ydbTypes.UTF8Value(processor.REPLICATION_OK)),
-		table.ValueParam("$stage", ydbTypes.UTF8Value(processor.STAGE_INITIAL_SCAN)),
-	)
-	initQuery := fmt.Sprintf("INSERT INTO %v (id, step_id, tx_id, state, stage) VALUES ($instanceId,0,0, $state, $stage)",
-		stateTable)
-	err := client.DoTx(ctx,
-		func(ctx context.Context, tx table.TransactionActor) error {
-			_, err := tx.Execute(ctx, initQuery, param)
-			return err
-		})
-
-	if ydb.IsOperationError(err, Ydb.StatusIds_PRECONDITION_FAILED) {
-		return nil
-	}
-	return err
-}
-
-func doDescribeTopics(ctx context.Context, feed configInit.Feed, srcDb *client.TopicClient) hb_tracker.TopicPartsCount {
-	topics := hb_tracker.NewTopicPartsCount()
-	for i := 0; i < len(feed.Streams); i++ {
-		cfgStream := &feed.Streams[i]
-
-		desc, err := srcDb.Describe(ctx, cfgStream.SrcTopic)
-		if err != nil {
-			xlog.Fatal(ctx, "Unable to describe topic",
-				zap.String("src_topic", cfgStream.SrcTopic),
-				zap.Error(err))
-		}
-
-		monTag := misc.TernaryIf(len(cfgStream.MonTag) > 0, cfgStream.MonTag, cfgStream.SrcTopic)
-
-		topics.TopicPartsCountMap[i] = hb_tracker.StreamCfg{PartitionsCount: len(desc.Partitions), MonTag: monTag}
-		topics.TotalPartsCount += len(desc.Partitions)
-	}
-
-	return *topics
-}
-
 func doMain(ctx context.Context, feed configInit.Feed, srcDb *client.TopicClient, dstDb *client.YdbClient,
 	locker *ydb_locker.Locker, mon pmon.Metrics, errChannel chan error) error {
-	topics := doDescribeTopics(ctx, feed, srcDb)
+	topics := feedRuntime.DescribeTopics(ctx, feed, srcDb)
 
 	xlog.Debug(ctx, "All topics described",
 		zap.Int("total parts", topics.TotalPartsCount))
@@ -236,31 +169,6 @@ func doMain(ctx context.Context, feed configInit.Feed, srcDb *client.TopicClient
 	return nil
 }
 
-func trySrcConnect(ctx context.Context, logger *zap.Logger, feed configInit.Feed, cluster configInit.Cluster, srcOpts []ydb.Option) bool {
-	srcDb, err := client.NewYdbClient(ctx, logger, cluster.ConnectionString, srcOpts...)
-	if err != nil {
-		xlog.Fatal(ctx, "Unable to connect to src cluster", zap.Error(err))
-	}
-	res := doDescribeTopics(ctx, feed, srcDb.TopicClient)
-	if len(res.TopicPartsCountMap) == len(feed.Streams) {
-		xlog.Debug(ctx, "Initial check for YDB src connection passed")
-		return true
-	} else {
-		return false
-	}
-}
-
-func tryDstConnect(ctx context.Context, feed configInit.Feed, tableClient *client.TableClient) bool {
-	for i := 0; i < len(feed.Streams); i++ {
-		cfgStream := &feed.Streams[i]
-		_, err := dst_table.DescribeTable(ctx, tableClient, cfgStream.DstTable)
-		if err != nil {
-			return false
-		}
-	}
-	return true
-}
-
 func main() {
 	var confPath string
 
@@ -282,11 +190,6 @@ func main() {
 	config, err := configInit.InitConfig(ctx, confPath)
 	if err != nil {
 		log.Fatal(ctx, "Unable to initialize config: ", err)
-	}
-
-	// FIXME: Feed selection/locking will be implemented separately.
-	if len(config.Feeds) != 1 {
-		log.Fatal("multiple feeds are not supported yet; configure exactly one feed")
 	}
 
 	// Setup logging
@@ -330,129 +233,33 @@ func main() {
 			zap.String("config", confStr))
 	}
 
-	feed := config.Feeds[0]
-
-	var mon *pmon.PromMon
+	var monServer *pmon.PromServer
 	if config.MonServer != nil {
-		mon = pmon.NewPromMon(ctx, config.MonServer, feed.ID)
-		defer mon.Stop()
+		monServer = pmon.NewPromServer(ctx, config.MonServer)
+		defer monServer.Stop()
 	}
 
-	source, err := config.ClusterByID(feed.Source)
+	acquired := feedRuntime.AcquireFeed(ctx, logger, config)
+	if acquired == nil {
+		return
+	}
+	feed := acquired.Feed
+	var mon *pmon.PromMon
+	if monServer != nil {
+		mon = monServer.NewFeed(feed.ID)
+	}
+	if mon != nil {
+		mon.SetCompleted()
+	}
+
+	err = doMain(acquired.Context, feed, acquired.Source.TopicClient, acquired.Destination, acquired.Locker, mon, errChannel)
+
 	if err != nil {
-		log.Fatal(err)
-	}
-	destination, err := config.ClusterByID(feed.Destination)
-	if err != nil {
-		log.Fatal(err)
-	}
-
-	srcOpts, err := auth.CreateYdbDriverAuthOptions(auth.AuthConfig{
-		CredentialsFile:   source.OAuthFile,
-		StaticToken:       source.StaticToken,
-		ExchangerEndpoint: source.OAuthEndpoint,
-	})
-	if err != nil {
-		xlog.Fatal(ctx, "Unable to create auth option for src",
-			zap.Error(err))
-	}
-
-	dstOpts, err := auth.CreateYdbDriverAuthOptions(auth.AuthConfig{
-		CredentialsFile:   destination.OAuthFile,
-		StaticToken:       destination.StaticToken,
-		ExchangerEndpoint: destination.OAuthEndpoint,
-	})
-	if err != nil {
-		xlog.Fatal(ctx, "Unable to create auth option for dst",
-			zap.Error(err))
-	}
-
-	if source.ClientBalancer == false {
-		srcOpts = append(srcOpts, ydb.WithBalancer(balancers.SingleConn()))
-	}
-
-	if destination.ClientBalancer == false {
-		dstOpts = append(dstOpts, ydb.WithBalancer(balancers.SingleConn()))
-	}
-
-	dstDb, err := client.NewYdbClient(ctx, logger, destination.ConnectionString, dstOpts...)
-	if err != nil {
-		xlog.Fatal(ctx, "Unable to connect to dst cluster", zap.Error(err))
-	}
-	xlog.Debug(ctx, "YDB dst opened")
-
-	err = createReplicaStateTable(ctx, dstDb.TableClient, feed.StateTable)
-	if err != nil {
-		xlog.Fatal(ctx, "Replication startup failed",
-			zap.String("unable to create table", feed.StateTable), zap.Error(err))
-	}
-
-	err = initReplicaStateTable(ctx, dstDb.TableClient, feed.StateTable, feed.InstanceId)
-	if err != nil {
-		xlog.Fatal(ctx, "Replication startup failed",
-			zap.String("unable to init table", feed.StateTable), zap.Error(err))
-	}
-
-	if trySrcConnect(ctx, logger, feed, source, srcOpts) {
-		if tryDstConnect(ctx, feed, dstDb.TableClient) {
-			if mon != nil {
-				mon.SetCompleted()
-			}
-		} else {
-			xlog.Fatal(ctx, "Unable to connect to DST cluster before lock stage")
-		}
+		xlog.Error(ctx, "Replication stopped with an error", zap.String("feed_id", feed.ID), zap.Error(err))
 	} else {
-		xlog.Fatal(ctx, "Unable to connect to SRC cluster before lock stage")
+		xlog.Info(ctx, "Replication stopped", zap.String("feed_id", feed.ID))
 	}
-
-	hostname, _ := os.Hostname()
-	owner := fmt.Sprintf("lock_%s_%s", hostname, uuid.New().String())
-
-	reqBuilder := GetLockerRequestBuilder(feed.StateTable)
-	lockStorage := ydb_locker.YdbLockStorage{Db: dstDb.GetDriver(), ReqBuilder: reqBuilder}
-	lockTtl := time.Duration(feed.MaxExpHbInterval*2) * time.Second
-	locker := ydb_locker.NewLocker(&lockStorage, feed.InstanceId, owner, lockTtl)
-	lockChannel := locker.LockerContext(ctx)
-	cont := true
-	feedWaitChecks := 0
-	for cont {
-		select {
-		case lockCtx, ok := <-lockChannel:
-			// Connect to YDB
-			if ok != true {
-				cont = false
-				continue
-			}
-			srcDb, err := client.NewYdbClient(lockCtx, logger, source.ConnectionString, srcOpts...)
-			if err != nil {
-				xlog.Fatal(ctx, "Unable to connect to src cluster", zap.Error(err))
-			}
-			xlog.Debug(ctx, "YDB src opened")
-			err = doMain(lockCtx, feed, srcDb.TopicClient, dstDb, locker, mon, errChannel)
-			xlog.Info(ctx, "Finished with error, stopping aardappel....", zap.String("error", err.Error()))
-			cancel()
-			cont = false
-			select {
-			case _, ok := <-lockChannel:
-				if !ok {
-					continue
-				}
-			case <-time.After(lockTtl):
-				xlog.Fatal(ctx, "Timeout waiting for lock to release")
-			}
-		case <-time.After(defaultLockCheckInterval):
-			if !config.WaitForFeed {
-				feedWaitChecks++
-				if feedWaitChecks >= 10 {
-					xlog.Info(ctx, "No feed ownership acquired, exiting worker")
-					cancel()
-					cont = false
-					continue
-				}
-			}
-			xlog.Info(ctx, "unable to get lock, other instance of aardappel is running")
-		}
-	}
-
+	cancel()
+	acquired.Cleanup()
 	xlog.Info(ctx, "aardappel has been shut down successfully")
 }

@@ -6,14 +6,15 @@ import (
 	"aardappel/internal/util/xlog"
 	"context"
 	"errors"
-	"github.com/prometheus/client_golang/prometheus"
-	"github.com/prometheus/client_golang/prometheus/collectors"
-	"github.com/prometheus/client_golang/prometheus/promhttp"
-	"go.uber.org/zap"
 	"net/http"
 	"sync"
 	"sync/atomic"
 	"time"
+
+	"github.com/prometheus/client_golang/prometheus"
+	"github.com/prometheus/client_golang/prometheus/collectors"
+	"github.com/prometheus/client_golang/prometheus/promhttp"
+	"go.uber.org/zap"
 )
 
 type Metrics interface {
@@ -57,8 +58,14 @@ func CreatePerTableCounters(tag string, reg *prometheus.Registry, feedID string)
 	return m
 }
 
+type PromServer struct {
+	reg  *prometheus.Registry
+	khz  khzHandler
+	Stop func()
+}
+
 type PromMon struct {
-	reg                  *prometheus.Registry
+	*PromServer
 	feedID               string
 	modificationsCount   prometheus.Counter
 	commitLatency        prometheus.Histogram
@@ -68,9 +75,6 @@ type PromMon struct {
 	replicationLagEst    prometheus.Gauge
 	perTableCounters     map[string]*MonPerTable
 	lock                 sync.Mutex
-	Stop                 func()
-
-	khz khzHandler
 }
 
 func lazyMetrics(mon *PromMon, tag string) *MonPerTable {
@@ -89,7 +93,9 @@ func lazyMetrics(mon *PromMon, tag string) *MonPerTable {
 
 func NewMetrics(reg *prometheus.Registry, feedID string) *PromMon {
 	m := &PromMon{
-		feedID: feedID,
+		PromServer:       &PromServer{reg: reg},
+		perTableCounters: make(map[string]*MonPerTable),
+		feedID:           feedID,
 		modificationsCount: prometheus.NewCounter(prometheus.CounterOpts{
 			ConstLabels: prometheus.Labels{"feed_id": feedID},
 			Name:        "modifications_count",
@@ -136,7 +142,7 @@ type khzHandler struct {
 	ready atomic.Bool
 }
 
-func (p *PromMon) SetCompleted() {
+func (p *PromServer) SetCompleted() {
 	p.khz.ready.Store(true)
 }
 
@@ -148,7 +154,14 @@ func (h *khzHandler) ServeHTTP(writer http.ResponseWriter, req *http.Request) {
 	}
 }
 
-func NewPromMon(ctx context.Context, config *config.MonServer, feedID string) *PromMon {
+// NewFeed registers metrics for the feed selected by this worker.
+func (p *PromServer) NewFeed(feedID string) *PromMon {
+	m := NewMetrics(p.reg, feedID)
+	m.PromServer = p
+	return m
+}
+
+func NewPromServer(ctx context.Context, config *config.MonServer) *PromServer {
 	reg := prometheus.NewRegistry()
 
 	reg.MustRegister(
@@ -159,31 +172,31 @@ func NewPromMon(ctx context.Context, config *config.MonServer, feedID string) *P
 		),
 	)
 
-	p := NewMetrics(reg, feedID)
-	p.perTableCounters = make(map[string]*MonPerTable)
-	p.reg = reg
+	p := &PromServer{reg: reg}
+	mux := http.NewServeMux()
 
 	server := &http.Server{
-		Addr: config.Listen,
+		Addr:    config.Listen,
+		Handler: mux,
 	}
 
-	http.Handle("/metrics", promhttp.HandlerFor(reg, promhttp.HandlerOpts{Registry: reg}))
+	mux.Handle("/metrics", promhttp.HandlerFor(reg, promhttp.HandlerOpts{Registry: reg}))
 
-	http.Handle("/readyz", &p.khz)
+	mux.Handle("/readyz", &p.khz)
 
 	go func() {
 		err := server.ListenAndServe()
 		if err != nil && !errors.Is(err, http.ErrServerClosed) {
-			xlog.Fatal(ctx, "Unable to shutdown http mon", zap.Error(err))
+			xlog.Fatal(ctx, "Monitoring HTTP server failed", zap.String("listen_address", config.Listen), zap.Error(err))
 		}
-		xlog.Info(ctx, "mon server stopped")
+		xlog.Info(ctx, "Monitoring HTTP server stopped")
 	}()
 
 	p.Stop = func() {
-		shutdownCtx, shutdownRelease := context.WithTimeout(ctx, 10*time.Second)
+		shutdownCtx, shutdownRelease := context.WithTimeout(context.Background(), 10*time.Second)
 		defer shutdownRelease()
 		if err := server.Shutdown(shutdownCtx); err != nil {
-			xlog.Fatal(ctx, "HTTP shutdown error", zap.Error(err))
+			xlog.Fatal(ctx, "Unable to shut down monitoring HTTP server", zap.String("listen_address", config.Listen), zap.Error(err))
 		}
 	}
 
