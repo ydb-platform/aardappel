@@ -2,9 +2,10 @@ package ydb_locker
 
 import (
 	"fmt"
+	"time"
+
 	"github.com/ydb-platform/ydb-go-sdk/v3/table"
 	"github.com/ydb-platform/ydb-go-sdk/v3/table/types"
-	"time"
 )
 
 type LockRequestBuilder interface {
@@ -49,11 +50,7 @@ func (l *LockRequestBuilderImpl) GetSelectLockQueryWithParams(lockName string) (
 }
 
 func (l *LockRequestBuilderImpl) GetUpdateLockQueryWithParams(lockName string, owner string, ttl time.Duration) (string, *table.QueryParameters) {
-	// if owner == $owner:
-	//		deadline = CurrentUtcTimestamp() + TTL
-	// elif CurrentUtcTimestamp() > deadline:
-	//		deadline = CurrentUtcTimestamp() + TTL
-	//      owner = $owner
+	// Only write when renewing our lease or acquiring an expired lease.
 	return fmt.Sprintf(
 			`DECLARE $LOCK_NAME AS Utf8;
 			DECLARE $OWNER AS Utf8;
@@ -62,13 +59,10 @@ func (l *LockRequestBuilderImpl) GetUpdateLockQueryWithParams(lockName string, o
 			$ts = CurrentUtcTimestamp();
 			$new_ts = $ts + $TTL;
 			
-			upsert into %[1]s
-			select
-				%[2]s,
-				if(%[3]s == $OWNER, %[3]s, if($ts >= %[4]s ?? $ts, $OWNER, %[3]s)) as %[3]s,
-				if(%[3]s == $OWNER, $new_ts, if($ts >= %[4]s ?? $ts, $new_ts, %[4]s)) as %[4]s
-			from %[1]s
-			where %[2]s == $LOCK_NAME;
+			update %[1]s
+			set %[3]s = $OWNER, %[4]s = $new_ts
+			where %[2]s == $LOCK_NAME
+				and (%[3]s == $OWNER or $ts >= (%[4]s ?? $ts));
 
 			select %[3]s, %[4]s
 			from %[1]s
