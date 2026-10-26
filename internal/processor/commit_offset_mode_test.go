@@ -15,7 +15,7 @@ func TestMessageCommitModeDoesNotTrackOffsets(t *testing.T) {
 	stream := types.ElementaryStreamId{ReaderId: 0, PartitionId: 0}
 	processor := Processor{
 		commitOffsetMode: false,
-		txChannel:        make(chan func() error, 3),
+		messages:         newTestMessageIterator(3),
 		txQueue:          tx_queue.NewTxQueue(),
 		lastPosition:     NewAtopmicPos(),
 		hbTracker: hb_tracker.NewHeartBeatTracker(hb_tracker.TopicPartsCount{

@@ -50,17 +50,18 @@ func (pos *AtopmicPos) Store(value types.Position) {
 }
 
 type Processor struct {
-	txChannel       chan func() error
-	hbTracker       *hb_tracker.HeartBeatTracker
-	txQueue         *tx_queue.TxQueue
-	dstServerClient *client.TableClient
-	lastPosition    *AtopmicPos
-	stateStoreQuery string
-	stateTablePath  string
-	instanceId      string
-	stage           string
-	initialScanPos  *types.HbData
-	keyFilter       KeyFilter
+	messages          messageQueue
+	hbTracker         *hb_tracker.HeartBeatTracker
+	txQueue           *tx_queue.TxQueue
+	dstServerClient   *client.TableClient
+	lastPosition      *AtopmicPos
+	stateStoreQuery   string
+	stateTablePath    string
+	instanceId        string
+	stage             string
+	initialScanPos    *types.HbData
+	lastDiagnosticLog time.Time
+	keyFilter         KeyFilter
 
 	commitOffsetMode bool
 
@@ -327,11 +328,11 @@ func selectReplicationState(ctx context.Context, client *client.TableClient, sta
 	return ReplicationState{position: types.Position{*step, *txId}, stage: *stage}, err
 }
 
-func NewProcessor(ctx context.Context, streamLayout hb_tracker.TopicPartsCount, stateTablePath string, client *client.TableClient, instanceId string, filter *config.KeyFilter, commitOffsetMode bool, maxConcurrentOffsetCommits int) (*Processor, error) {
+func NewProcessor(ctx context.Context, streamLayout hb_tracker.TopicPartsCount, stateTablePath string, client *client.TableClient, instanceId string, filter *config.KeyFilter, commitOffsetMode bool, maxConcurrentOffsetCommits int, legacyReaderScheduling bool) (*Processor, error) {
 	var p Processor
 	p.commitOffsetMode = commitOffsetMode
 	p.hbTracker = hb_tracker.NewHeartBeatTracker(streamLayout)
-	p.txChannel = make(chan func() error, 1000)
+	p.messages = newMessageQueue(streamLayout, 1000, legacyReaderScheduling)
 	p.txQueue = tx_queue.NewTxQueue()
 	p.dstServerClient = client
 	p.stateStoreQuery = createStateStoreQuery(stateTablePath)
@@ -378,14 +379,8 @@ func (processor *Processor) StartHbGuard(ctx context.Context, timeout uint32, me
 	processor.hbTracker.StartHbGuard(ctx, timeout, metrics)
 }
 
-func (processor *Processor) Enqueue(ctx context.Context, fn func() error) {
-	// To be able to handle restart we must no block after ctx cancellation
-	select {
-	case processor.txChannel <- fn:
-		return
-	case <-ctx.Done():
-		return
-	}
+func (processor *Processor) Enqueue(ctx context.Context, readerID uint32, fn func() error) {
+	processor.messages.Enqueue(ctx, readerID, fn)
 }
 
 func (processor *Processor) registerOffset(readerId uint32, offset types.TopicOffset) *partitionOffsetProgress {
@@ -450,7 +445,7 @@ func (processor *Processor) RegisterTopicReader(readerID uint32, reader offsetCo
 }
 
 func (processor *Processor) EnqueueProcessedOffset(ctx context.Context, readerId uint32, offset types.TopicOffset) {
-	processor.Enqueue(ctx, func() error {
+	processor.Enqueue(ctx, readerId, func() error {
 		processor.markOffsetProcessed(readerId, offset)
 		return nil
 	})
@@ -519,7 +514,7 @@ func (processor *Processor) EnqueueHb(ctx context.Context, hb types.HbData) erro
 		return processor.completeHb(*completed)
 	}
 
-	processor.Enqueue(ctx, fn)
+	processor.messages.EnqueueHb(ctx, hb, fn)
 	return nil
 }
 
@@ -597,7 +592,7 @@ func (processor *Processor) EnqueueTx(ctx context.Context, tx types.TxData) erro
 		return nil
 	}
 
-	processor.Enqueue(ctx, fn)
+	processor.Enqueue(ctx, tx.TableId, fn)
 	return nil
 }
 
@@ -647,18 +642,16 @@ func (processor *Processor) assignTxsToDstTables(ctx context.Context, txs []type
 }
 
 func (processor *Processor) doEvent(ctx context.Context) error {
-	var maxEventPerIteration int = 1000
+	maxEventPerIteration := 1000
 	for maxEventPerIteration > 0 {
 		maxEventPerIteration--
-		select {
-		case fn := <-processor.txChannel:
-			err := fn()
-			if err != nil {
-				errMsg := fmt.Sprintf("Processor.doEvent: Unable to push event")
-				return types.ReturnError(ctx, err, errMsg)
-			}
-		default:
-			maxEventPerIteration = 0
+		apply := processor.messages.Next()
+		if apply == nil {
+			break
+		}
+		if err := apply(); err != nil {
+			errMsg := fmt.Sprintf("Processor.doEvent: Unable to push event")
+			return types.ReturnError(ctx, err, errMsg)
 		}
 	}
 	if processor.commitOffsetMode {

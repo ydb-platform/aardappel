@@ -55,6 +55,8 @@ feeds:
     ## Enable direct offset commits for each partition.
     ## When disabled, Commit is called for each message individually.
     commit_offset_mode: false
+    ## Set true to restore the shared reader channel instead of quorum scheduling.
+    legacy_reader_scheduling: false
     ## Maximum number of concurrent offset commit requests when commit_offset_mode is enabled.
     max_concurrent_offset_commits: 1000
 
