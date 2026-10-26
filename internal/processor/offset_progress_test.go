@@ -216,7 +216,7 @@ func TestEnqueueOldTxMarksOffsetWithoutQueueingTx(t *testing.T) {
 	streamID := types.ElementaryStreamId{ReaderId: 0, PartitionId: 0}
 	processor := Processor{
 		commitOffsetMode:       true,
-		txChannel:              make(chan func() error, 1),
+		messages:               newTestMessageIterator(1),
 		txQueue:                tx_queue.NewTxQueue(),
 		lastPosition:           NewAtopmicPos(),
 		offsetProgressByStream: make(map[types.ElementaryStreamId]*partitionOffsetProgress),
@@ -257,7 +257,7 @@ func TestEnqueueOldHbMarksOffsetWithoutTrackingHeartbeat(t *testing.T) {
 	streamID := types.ElementaryStreamId{ReaderId: 0, PartitionId: 0}
 	processor := Processor{
 		commitOffsetMode: true,
-		txChannel:        make(chan func() error, 1),
+		messages:         newTestMessageIterator(1),
 		hbTracker: hb_tracker.NewHeartBeatTracker(hb_tracker.TopicPartsCount{
 			TopicPartsCountMap: map[int]hb_tracker.StreamCfg{0: {PartitionsCount: 1}},
 			TotalPartsCount:    1,
@@ -301,7 +301,7 @@ func TestDoReplicationDoesNotQueueOffsetWhenDBCommitFails(t *testing.T) {
 	streamID := types.ElementaryStreamId{ReaderId: 0, PartitionId: 0}
 	processor := Processor{
 		commitOffsetMode: true,
-		txChannel:        make(chan func() error, 1),
+		messages:         newTestMessageIterator(1),
 		hbTracker: hb_tracker.NewHeartBeatTracker(hb_tracker.TopicPartsCount{
 			TopicPartsCountMap: map[int]hb_tracker.StreamCfg{0: {PartitionsCount: 1}},
 			TotalPartsCount:    1,

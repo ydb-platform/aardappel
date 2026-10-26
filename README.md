@@ -440,6 +440,7 @@ different feeds use the same effective `instance_id` and destination cluster ID.
 | `instance_id` | no | Replication state, locking, key-filter, and conflict-command identifier; defaults to `id`. |
 | `source` / `destination` | yes | Cluster IDs for each feed. |
 | `state_table` | yes | Destination service table for state and locking. |
+| `legacy_reader_scheduling` | no | Defaults to `false` (quorum-based reader scheduling). Set `true` to restore the shared FIFO reader channel. |
 | `commit_offset_mode` | no | Uses `CommitOffset` instead of `Commit` to commit offsets in source CDC topics. |
 | `max_concurrent_offset_commits` | no | Maximum number of concurrent `CommitOffset` requests. |
 | `streams` | yes | List of inline stream mappings or list of stream set references. |
@@ -1214,6 +1215,7 @@ mon_server:
 | `instance_id` | нет | Идентификатор состояния, блокировки, key filter и команд конфликтов; по умолчанию `id`. |
 | `source` / `destination` | да | ID кластеров для feed. |
 | `state_table` | да | Путь сервисной таблицы состояния и lock в destination. |
+| `legacy_reader_scheduling` | нет | По умолчанию `false`: чтение по локальному кворуму. Значение `true` возвращает общий FIFO-канал. |
 | `commit_offset_mode` | нет | Использует `CommitOffset` вместо `Commit` для коммита оффсетов исходных CDC-топиков. |
 | `max_concurrent_offset_commits` | нет | Максимальное число одновременных запросов `CommitOffset`. |
 | `streams` | да | Список inline streams или список ссылок на наборы streams. |

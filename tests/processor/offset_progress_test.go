@@ -359,7 +359,7 @@ func TestOffsetProgressIntegration(t *testing.T) {
 				defer run.stop()
 				run.waitEnqueued(2)
 				initialMessagesProcessed := make(chan struct{})
-				run.processor.Enqueue(run.ctx, func() error {
+				run.processor.Enqueue(run.ctx, 0, func() error {
 					close(initialMessagesProcessed)
 					return nil
 				})
@@ -418,7 +418,7 @@ func TestOffsetProgressIntegration(t *testing.T) {
 
 				run.waitEnqueued(2)
 				remainingMessagesProcessed := make(chan struct{})
-				run.processor.Enqueue(run.ctx, func() error {
+				run.processor.Enqueue(run.ctx, 0, func() error {
 					close(remainingMessagesProcessed)
 					return nil
 				})
@@ -564,7 +564,7 @@ func (f *replicationTestEnv) startProcessorWithCommits(maxConcurrentOffsetCommit
 		dstTables = append(dstTables, dstTable)
 	}
 	prc, err := processor.NewProcessor(ctx, streamLayout,
-		f.stateTable, f.client.TableClient, f.instanceID, nil, f.commitOffsetMode, maxConcurrentOffsetCommits)
+		f.stateTable, f.client.TableClient, f.instanceID, nil, f.commitOffsetMode, maxConcurrentOffsetCommits, false)
 	require.NoError(f.t, err)
 
 	enqueued := make(chan struct{}, 10)

@@ -59,27 +59,28 @@ type Config struct {
 }
 
 type Cluster struct {
-	ID               string            `yaml:"id"`
-	ConnectionString string            `yaml:"connection_string"`
-	ClientBalancer   bool              `yaml:"client_balancer"`
-	OAuthFile        string            `yaml:"oauth2_file"`
-	OAuthEndpoint    string            `yaml:"oauth2_endpoint"`
-	StaticToken      string            `yaml:"static_token"`
+	ID               string `yaml:"id"`
+	ConnectionString string `yaml:"connection_string"`
+	ClientBalancer   bool   `yaml:"client_balancer"`
+	OAuthFile        string `yaml:"oauth2_file"`
+	OAuthEndpoint    string `yaml:"oauth2_endpoint"`
+	StaticToken      string `yaml:"static_token"`
 }
 
 type Feed struct {
-	InstanceId       string            `yaml:"instance_id,omitempty"`
-	Source           string            `yaml:"source"`
-	Destination      string            `yaml:"destination"`
-	ID               string            `yaml:"id"`
-	CommitOffsetMode bool              `yaml:"commit_offset_mode"`
-	Streams          []Stream          `yaml:"streams"`
-	StreamReferences []StreamReference `yaml:"-"`
-	StateTable       string            `yaml:"state_table"`
-	MaxExpHbInterval uint32            `yaml:"max_expected_heartbeat_interval"`
-	CmdQueue         *CmdQueue         `yaml:"cmd_queue"`
-	KeyFilter        *KeyFilter        `yaml:"key_filter"`
-	DLQueue          *DLQueue          `yaml:"dead_letter_queue"`
+	InstanceId             string            `yaml:"instance_id,omitempty"`
+	Source                 string            `yaml:"source"`
+	Destination            string            `yaml:"destination"`
+	ID                     string            `yaml:"id"`
+	LegacyReaderScheduling bool              `yaml:"legacy_reader_scheduling"`
+	CommitOffsetMode       bool              `yaml:"commit_offset_mode"`
+	Streams                []Stream          `yaml:"streams"`
+	StreamReferences       []StreamReference `yaml:"-"`
+	StateTable             string            `yaml:"state_table"`
+	MaxExpHbInterval       uint32            `yaml:"max_expected_heartbeat_interval"`
+	CmdQueue               *CmdQueue         `yaml:"cmd_queue"`
+	KeyFilter              *KeyFilter        `yaml:"key_filter"`
+	DLQueue                *DLQueue          `yaml:"dead_letter_queue"`
 
 	MaxConcurrentOffsetCommits int `yaml:"max_concurrent_offset_commits"`
 }
