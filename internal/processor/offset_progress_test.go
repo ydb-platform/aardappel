@@ -345,23 +345,31 @@ func TestInitialScanDoesNotMarkHeartbeatOffsetWhenDBCommitFails(t *testing.T) {
 			TopicPartsCountMap: map[int]hb_tracker.StreamCfg{0: {PartitionsCount: 1}},
 			TotalPartsCount:    1,
 		}),
-		txQueue: tx_queue.NewTxQueue(),
-		stage:   STAGE_INITIAL_SCAN,
-		initialScanPos: &types.HbData{
-			StreamId: types.ElementaryStreamId{ReaderId: 0, PartitionId: 0},
-			Step:     1,
-			TopicOffset: &types.TopicOffset{
-				PartitionId: 0,
-				StartOffset: 0,
-				Offset:      0,
-			},
-		},
+		txQueue:                tx_queue.NewTxQueue(),
+		stage:                  STAGE_INITIAL_SCAN,
+		initialScanPos:         &types.Position{Step: 1},
 		offsetProgressByStream: make(map[types.ElementaryStreamId]*partitionOffsetProgress),
 		commitTasks:            make(chan offsetCommitTask, 1),
 	}
+	obsolete, err := processor.hbTracker.AddHb(ctx, types.HbData{
+		StreamId: types.ElementaryStreamId{ReaderId: 0, PartitionId: 0},
+		Step:     processor.initialScanPos.Step,
+		TxId:     processor.initialScanPos.TxId,
+		TopicOffset: &types.TopicOffset{
+			PartitionId: 0,
+			StartOffset: 0,
+			Offset:      0,
+		},
+	})
+	if err != nil || obsolete != nil {
+		t.Fatalf("adding initial-scan heartbeat: obsolete=%v, err=%v", obsolete, err)
+	}
+	if quorum, ready := processor.hbTracker.GetQuorum(); !ready || quorum != *processor.initialScanPos {
+		t.Fatalf("initial-scan heartbeat missing at boundary: quorum=%v, ready=%t", quorum, ready)
+	}
 	wantErr := errors.New("DB commit failed")
 
-	_, err := processor.DoInitialScan(ctx, nil,
+	_, err = processor.DoInitialScan(ctx, nil,
 		func(func(context.Context, table.Session, table.Transaction) error) error { return wantErr })
 	if !errors.Is(err, wantErr) {
 		t.Fatalf("initial scan error: got %v, want %v", err, wantErr)

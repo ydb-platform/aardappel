@@ -42,10 +42,6 @@ type GuardMetrics interface {
 	TopicWithoutHB(noHb bool, tag string)
 }
 
-type Feeder interface {
-	AddHb(data types.HbData) error
-}
-
 func NewHeartBeatTracker(streamLayout TopicPartsCount) *HeartBeatTracker {
 	total := streamLayout.TotalPartsCount
 	if total == 0 {
@@ -125,160 +121,75 @@ func (ht *HeartBeatTracker) StartHbGuard(ctx context.Context, timeout uint32, me
 	go ht.guardLoop(ctx, timeout, metrics)
 }
 
-func (ht *HeartBeatTracker) AddHb(ctx context.Context, data types.HbData) error {
-	_, err := ht.addHb(ctx, data, false)
-	return err
-}
-
-// AddHbWithoutCompletion returns the obsolete heartbeat for offset tracking instead of committing it.
-// The new scheme uses this separate path to preserve the legacy behavior.
-func (ht *HeartBeatTracker) AddHbWithoutCompletion(ctx context.Context, data types.HbData) (*types.HbData, error) {
-	return ht.addHb(ctx, data, true)
-}
-
-func (ht *HeartBeatTracker) addHb(ctx context.Context, data types.HbData, withoutCompletion bool) (*types.HbData, error) {
+// AddHb keeps the latest heartbeat per stream and returns the obsolete heartbeat
+// for the caller to complete. It never commits topic offsets.
+func (ht *HeartBeatTracker) AddHb(ctx context.Context, data types.HbData) (*types.HbData, error) {
 	ht.lock.Lock()
 	defer ht.lock.Unlock()
-	var completed *types.HbData
-	hb, ok := ht.streams[data.StreamId]
-	if ok {
-		storedPos := *types.NewPosition(hb)
-		newPos := *types.NewPosition(data)
-
-		switch {
-		case newPos.LessThan(storedPos):
+	stored, exists := ht.streams[data.StreamId]
+	if !exists && len(ht.streams) >= ht.totalStreamsNum {
+		return nil, fmt.Errorf("heartbeat stream count would exceed total count: %d", ht.totalStreamsNum)
+	}
+	var obsolete *types.HbData
+	if exists {
+		if types.NewPosition(data).LessThan(*types.NewPosition(stored)) {
 			xlog.Warn(ctx, "AddHb: hb tracker received hb older than current hb",
 				zap.Uint32("reader_id", data.StreamId.ReaderId),
 				zap.Int64("partition_id", data.StreamId.PartitionId),
-				zap.Uint64("stored_step", hb.Step),
-				zap.Uint64("stored_tx_id", hb.TxId),
+				zap.Uint64("stored_step", stored.Step),
+				zap.Uint64("stored_tx_id", stored.TxId),
 				zap.Uint64("new_step", data.Step),
 				zap.Uint64("new_tx_id", data.TxId))
-
-			if withoutCompletion {
-				return &data, nil
-			}
-			err := data.CommitTopic()
-			if err != nil {
-				errMsg := fmt.Sprintf("AddHb: unable to commit HB %v, stepId: %d, txId: %d", err,
-					data.Step, data.TxId)
-				return nil, types.ReturnError(ctx, err, errMsg)
-			}
-			return nil, nil
-
-		default:
-			logMsg := "AddHb: hb tracker received newer hb; will commit stored hb and replace it"
-			if storedPos == newPos {
-				logMsg = "AddHb: hb tracker received duplicate hb; will commit stored hb and replace it"
-			}
-
-			xlog.Debug(ctx, logMsg,
-				zap.Uint32("reader_id", data.StreamId.ReaderId),
-				zap.Int64("partition_id", data.StreamId.PartitionId),
-				zap.Uint64("stored_step", hb.Step),
-				zap.Uint64("stored_tx_id", hb.TxId),
-				zap.Uint64("new_step", data.Step),
-				zap.Uint64("new_tx_id", data.TxId))
-
-			if withoutCompletion {
-				completedHb := hb
-				completed = &completedHb
-			} else {
-				err := hb.CommitTopic()
-				if err != nil {
-					errMsg := fmt.Sprintf("AddHb: unable to commit stored HB %v, stepId: %d, txId: %d", err,
-						hb.Step, hb.TxId)
-					return nil, types.ReturnError(ctx, err, errMsg)
-				}
-			}
-			hb = data
+			return &data, nil
 		}
-	} else {
-		xlog.Debug(ctx, "AddHb: hb tracker storing first hb for stream",
-			zap.Uint32("reader_id", data.StreamId.ReaderId),
-			zap.Int64("partition_id", data.StreamId.PartitionId),
-			zap.Uint64("step", data.Step),
-			zap.Uint64("tx_id", data.TxId))
-		hb = data
+		obsolete = &stored
 	}
-	ht.streams[data.StreamId] = hb
-
-	if len(ht.streams) > ht.totalStreamsNum {
-		return nil, fmt.Errorf("Resulted stream count: %d grather than total count: %d",
-			len(ht.streams), ht.totalStreamsNum)
-	} else if len(ht.streams) == ht.totalStreamsNum {
+	ht.streams[data.StreamId] = data
+	if len(ht.streams) == ht.totalStreamsNum {
 		ht.lastFullHbTime.Store(time.Now().Unix())
 	}
-	return completed, nil
+	return obsolete, nil
 }
 
-func (ht *HeartBeatTracker) GetReady() bool {
-	return len(ht.streams) == ht.totalStreamsNum
-}
-
-func (ht *HeartBeatTracker) GetQuorum() (types.HbData, bool) {
-	var resHb types.HbData
-	if !ht.GetReady() {
-		return resHb, false
+func (ht *HeartBeatTracker) GetQuorum() (types.Position, bool) {
+	if len(ht.streams) != ht.totalStreamsNum {
+		return types.Position{}, false
 	}
-
-	var inited bool
-	for _, v := range ht.streams {
-		if !inited {
-			resHb = v
-			inited = true
-		} else {
-			if types.NewPosition(v).LessThan(*types.NewPosition(resHb)) {
-				resHb = v
-			}
+	var result types.Position
+	initialized := false
+	for _, hb := range ht.streams {
+		position := *types.NewPosition(hb)
+		if !initialized || position.LessThan(result) {
+			result = position
+			initialized = true
 		}
 	}
-
-	return resHb, true
+	return result, true
 }
 
-func (ht *HeartBeatTracker) GetMaxHb() types.HbData {
-	var resHb types.HbData
-
-	var inited bool
-	for _, v := range ht.streams {
-		if !inited {
-			resHb = v
-			inited = true
-		} else {
-			if types.NewPosition(resHb).LessThan(*types.NewPosition(v)) {
-				resHb = v
-			}
+func (ht *HeartBeatTracker) GetMaxPosition() (types.Position, bool) {
+	if len(ht.streams) != ht.totalStreamsNum {
+		return types.Position{}, false
+	}
+	var result types.Position
+	for _, hb := range ht.streams {
+		position := *types.NewPosition(hb)
+		if result.LessThan(position) {
+			result = position
 		}
 	}
-
-	return resHb
+	return result, true
 }
 
-func (ht *HeartBeatTracker) GetQuorumAfter(hb types.HbData) (types.HbData, bool) {
-	resHb, ok := ht.GetQuorum()
-	if !ok {
-		return resHb, false
-	}
-
-	if types.NewPosition(hb).LessThan(*types.NewPosition(resHb)) {
-		return resHb, true
-	}
-
-	return types.HbData{}, false
-}
-
-func (ht *HeartBeatTracker) Commit(data types.HbData) bool {
+func (ht *HeartBeatTracker) TakeHBsAt(position types.Position) []types.HbData {
 	ht.lock.Lock()
 	defer ht.lock.Unlock()
-	hb, ok := ht.streams[data.StreamId]
-	if !ok {
-		return true
+	var heartbeats []types.HbData
+	for stream, hb := range ht.streams {
+		if *types.NewPosition(hb) == position {
+			heartbeats = append(heartbeats, hb)
+			delete(ht.streams, stream)
+		}
 	}
-	if types.NewPosition(data).LessThan(*types.NewPosition(hb)) {
-		return false
-	} else {
-		delete(ht.streams, data.StreamId)
-		return true
-	}
+	return heartbeats
 }
