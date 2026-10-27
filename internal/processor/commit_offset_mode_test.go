@@ -53,5 +53,4 @@ func TestMessageCommitModeDoesNotTrackOffsets(t *testing.T) {
 	hb, ready := processor.hbTracker.GetQuorum()
 	require.True(t, ready)
 	require.Equal(t, uint64(3), hb.Step)
-	require.Nil(t, hb.TopicOffset)
 }
