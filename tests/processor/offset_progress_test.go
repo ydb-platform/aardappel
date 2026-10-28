@@ -38,10 +38,11 @@ type replicationTestEnv struct {
 	stateTable string
 	instanceID string
 
-	commitOffsetMode bool
-	sessions         chan context.Context
-	disconnect       chan context.CancelFunc
-	readerErrors     chan error
+	commitOffsetMode  bool
+	legacyInitialScan bool
+	sessions          chan context.Context
+	disconnect        chan context.CancelFunc
+	readerErrors      chan error
 }
 
 type replicationStream struct {
@@ -450,6 +451,100 @@ func TestOffsetProgressIntegration(t *testing.T) {
 			})
 		}
 	})
+	t.Run("streaming initial scan flushes while seeking synchronization", func(t *testing.T) {
+		for _, config := range []testConfig{messageCommit, commitOffset} {
+			t.Run(config.name, func(t *testing.T) {
+				env := newReplicationTestEnv(t, &localYDB, config.commitOffsetMode, processor.STAGE_INITIAL_SCAN, 2)
+				env.legacyInitialScan = false
+				stream := env.streams[0]
+				initial := make([]string, 0, 1002)
+				for id := 1; id <= 1001; id++ {
+					initial = append(initial, fmt.Sprintf(`{"update":{"value":%d},"key":[%d],"ts":[1,%d]}`, id, id, id))
+				}
+				initial = append(initial, `{"resolved":[10,0]}`)
+				local_ydb.WriteTopicMessages(t, env.ctx, env.client.GetDriver(), stream.topic, 0, initial...)
+				local_ydb.WriteTopicMessages(t, env.ctx, env.client.GetDriver(), stream.topic, 1, `{"resolved":[20,0]}`)
+				run := env.startProcessor()
+				defer run.stop()
+				type scanResult struct {
+					stats *processor.ReplicationStats
+					err   error
+				}
+				result := make(chan scanResult, 1)
+				commits := 0
+				go func() {
+					stats, err := run.processor.DoReplication(run.ctx, run.dstTables,
+						func(fn func(context.Context, table.Session, table.Transaction) error) error {
+							commits++
+							if commits == 4 {
+								// Two full batches and the remainder are durable before
+								// the separate checkpoint-only transaction begins.
+								require.Equal(t, uint64(2002), env.readValue(0, 2002))
+								_, stage := env.readState()
+								require.Equal(t, processor.STAGE_INITIAL_SCAN, stage)
+							}
+							return run.executeTransaction(fn)
+						})
+					result <- scanResult{stats, err}
+				}()
+				run.waitEnqueued(1003)
+				boundaryCaptured := make(chan struct{})
+				run.processor.Enqueue(run.ctx, 0, func() error { close(boundaryCaptured); return nil })
+				select {
+				case <-boundaryCaptured:
+				case <-time.After(integrationTimeout):
+					t.Fatal("initial heartbeat boundary was not captured")
+				}
+				// Partition 0 advances from 10 towards the fixed maximum 20. These data
+				// must be written before either partition supplies a quorum beyond 20.
+				catchup := make([]string, 0, 1000)
+				for id := 1002; id <= 2001; id++ {
+					catchup = append(catchup, fmt.Sprintf(`{"update":{"value":%d},"key":[%d],"ts":[15,%d]}`, id, id, id))
+				}
+				local_ydb.WriteTopicMessages(t, env.ctx, env.client.GetDriver(), stream.topic, 0, catchup...)
+				run.waitEnqueued(1000)
+				catchupProcessed := make(chan struct{})
+				run.processor.Enqueue(run.ctx, 0, func() error { close(catchupProcessed); return nil })
+				select {
+				case <-catchupProcessed:
+				case <-time.After(integrationTimeout):
+					t.Fatal("catchup batch was not processed")
+				}
+				_, stage := env.readState()
+				require.Equal(t, processor.STAGE_INITIAL_SCAN, stage)
+				require.Equal(t, uint64(2000), env.readValue(0, 2000))
+
+				local_ydb.WriteTopicMessages(t, env.ctx, env.client.GetDriver(), stream.topic, 0,
+					`{"update":{"value":2002},"key":[2002],"ts":[22,0]}`,
+					`{"update":{"value":2003},"key":[2003],"ts":[25,0]}`,
+					`{"update":{"value":2004},"key":[2004],"ts":[26,0]}`,
+					`{"resolved":[27,0]}`)
+				// The final quorum is 25, so timestamps 25 and 26 stay pending for RUN.
+				local_ydb.WriteTopicMessages(t, env.ctx, env.client.GetDriver(), stream.topic, 1, `{"resolved":[25,0]}`)
+				select {
+				case completed := <-result:
+					require.NoError(t, completed.err)
+					require.Equal(t, 4, commits)
+					require.Equal(t, 2002, completed.stats.ModificationsCount)
+					require.Equal(t, 2002, completed.stats.PerTableStats[0].ModificationsCount)
+					require.Equal(t, types.Position{Step: 25}, completed.stats.LastHeartBeat)
+				case <-time.After(integrationTimeout):
+					t.Fatal("streaming initial scan did not finish")
+				}
+				step, stage := env.readState()
+				require.Equal(t, uint64(25), step)
+				require.Equal(t, processor.STAGE_RUN, stage)
+				require.Equal(t, uint64(2002), env.readValue(0, 2002))
+				local_ydb.WaitCommittedOffset(t, env.ctx, env.client.GetDriver(), stream.topic, stream.consumer, 0, 2003, integrationTimeout)
+				// RUN must subsequently apply the records held above the scan boundary.
+				local_ydb.WriteTopicMessages(t, env.ctx, env.client.GetDriver(), stream.topic, 1, `{"resolved":[28,0]}`)
+				_, err := run.processor.DoReplication(run.ctx, run.dstTables, run.executeTransaction)
+				require.NoError(t, err)
+				require.Equal(t, uint64(2003), env.readValue(0, 2003))
+				require.Equal(t, uint64(2004), env.readValue(0, 2004))
+			})
+		}
+	})
 }
 
 func newReplicationTestEnv(t *testing.T, localYDB *local_ydb.Ydb, commitOffsetMode bool, stage string, partitionCounts ...int) *replicationTestEnv {
@@ -477,13 +572,14 @@ func newReplicationTestEnv(t *testing.T, localYDB *local_ydb.Ydb, commitOffsetMo
 
 	suffix := strings.ReplaceAll(uuid.NewString(), "-", "")
 	env := &replicationTestEnv{
-		t:                t,
-		ctx:              ctx,
-		client:           ydbClient,
-		stateTable:       "offset_state_" + suffix,
-		instanceID:       "offset_instance",
-		commitOffsetMode: commitOffsetMode,
-		disconnect:       disconnect,
+		t:                 t,
+		ctx:               ctx,
+		client:            ydbClient,
+		stateTable:        "offset_state_" + suffix,
+		instanceID:        "offset_instance",
+		commitOffsetMode:  commitOffsetMode,
+		legacyInitialScan: true,
+		disconnect:        disconnect,
 	}
 	for streamID, partitions := range partitionCounts {
 		stream := replicationStream{
@@ -564,7 +660,7 @@ func (f *replicationTestEnv) startProcessorWithCommits(maxConcurrentOffsetCommit
 		dstTables = append(dstTables, dstTable)
 	}
 	prc, err := processor.NewProcessor(ctx, streamLayout,
-		f.stateTable, f.client.TableClient, f.instanceID, nil, f.commitOffsetMode, maxConcurrentOffsetCommits, false)
+		f.stateTable, f.client.TableClient, f.instanceID, nil, f.commitOffsetMode, maxConcurrentOffsetCommits, false, f.legacyInitialScan)
 	require.NoError(f.t, err)
 
 	enqueued := make(chan struct{}, 10)

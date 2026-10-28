@@ -73,6 +73,7 @@ type Feed struct {
 	Destination            string            `yaml:"destination"`
 	ID                     string            `yaml:"id"`
 	LegacyReaderScheduling bool              `yaml:"legacy_reader_scheduling"`
+	LegacyInitialScan      bool              `yaml:"legacy_initial_scan"`
 	CommitOffsetMode       bool              `yaml:"commit_offset_mode"`
 	Streams                []Stream          `yaml:"streams"`
 	StreamReferences       []StreamReference `yaml:"-"`

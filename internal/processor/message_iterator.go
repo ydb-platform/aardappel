@@ -5,6 +5,7 @@ import (
 	"aardappel/internal/types"
 	"container/heap"
 	"context"
+	"time"
 )
 
 // MessageIterator orders consumption of bounded reader channels by local quorum.
@@ -60,23 +61,44 @@ func (it *MessageIterator) enqueue(ctx context.Context, readerID uint32, message
 	}
 }
 
-// Next returns one event and advances scheduling when a heartbeat is dequeued.
-// It returns nil when the selected reader has no input, allowing the caller to
-// flush or check cancellation without reading ahead. The caller executes the
-// returned event before requesting the next one and stops on a processing error.
-func (it *MessageIterator) Next() func() error {
-	if it == nil || len(it.queue) == 0 {
+// WaitNext waits on the reader with the lowest local quorum.
+// It returns nil on timeout or cancellation. Execute the returned event before
+// requesting another one.
+func (it *MessageIterator) WaitNext(ctx context.Context, timeout time.Duration) func() error {
+	if ctx.Err() != nil || it == nil || len(it.queue) == 0 {
 		return nil
 	}
+	messages := it.queue[0].messages
+	var message queuedMessage
+
+	// try now
+	ok := false
 	select {
-	case message := <-it.queue[0].messages:
-		if message.heartbeat != nil {
-			it.advance(*message.heartbeat)
-		}
-		return message.apply
+	case message = <-messages:
+		ok = true
 	default:
-		return nil
 	}
+
+	if !ok {
+		if timeout <= 0 {
+			return nil
+		}
+		// try wait
+		timer := time.NewTimer(timeout)
+		defer timer.Stop()
+		select {
+		case message = <-messages:
+		case <-ctx.Done():
+			return nil
+		case <-timer.C:
+			return nil
+		}
+	}
+
+	if message.heartbeat != nil {
+		it.advance(*message.heartbeat)
+	}
+	return message.apply
 }
 
 func (it *MessageIterator) advance(hb types.HbData) {
@@ -101,17 +123,6 @@ func (it *MessageIterator) advance(hb types.HbData) {
 	reader.ready = true
 	reader.quorum = quorum
 	heap.Fix(&it.queue, 0)
-}
-
-func (it *MessageIterator) Len() int {
-	if it == nil {
-		return 0
-	}
-	count := 0
-	for _, reader := range it.readers {
-		count += len(reader.messages)
-	}
-	return count
 }
 
 type readerHeap []*messageReader

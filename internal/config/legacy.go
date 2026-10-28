@@ -14,6 +14,7 @@ type legacyConfig struct {
 	InstanceId             string     `yaml:"instance_id"`
 	MultipleInstancesMode  bool       `yaml:"multiple_instances_mode"`
 	LegacyReaderScheduling bool       `yaml:"legacy_reader_scheduling"`
+	LegacyInitialScan      bool       `yaml:"legacy_initial_scan"`
 	CommitOffsetMode       bool       `yaml:"commit_offset_mode"`
 	Streams                []Stream   `yaml:"streams"`
 	StateTable             string     `yaml:"state_table"`
@@ -38,6 +39,7 @@ func (legacy legacyConfig) toConfig() Config {
 	current.Feeds = []Feed{{
 		ID: legacy.InstanceId, Source: "source", Destination: "destination",
 		LegacyReaderScheduling: legacy.LegacyReaderScheduling,
+		LegacyInitialScan:      legacy.LegacyInitialScan,
 		CommitOffsetMode:       legacy.CommitOffsetMode, MaxConcurrentOffsetCommits: legacy.MaxConcurrentOffsetCommits,
 		Streams: legacy.Streams, StateTable: legacy.StateTable, MaxExpHbInterval: legacy.MaxExpHbInterval,
 		CmdQueue: legacy.CmdQueue, KeyFilter: legacy.KeyFilter, DLQueue: legacy.DLQueue,

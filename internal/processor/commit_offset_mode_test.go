@@ -41,7 +41,9 @@ func TestMessageCommitModeDoesNotTrackOffsets(t *testing.T) {
 		CommitTopic: func() error { currentHbCommits++; return nil },
 	}))
 
-	require.NoError(t, processor.doEvent(ctx))
+	for range 3 {
+		require.NoError(t, processor.doEvent(ctx))
+	}
 
 	require.Nil(t, processor.offsetProgressByStream)
 	require.Nil(t, processor.streamsWithOffsetsToCommit)
