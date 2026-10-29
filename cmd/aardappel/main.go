@@ -237,6 +237,7 @@ func main() {
 	if config.MonServer != nil {
 		monServer = pmon.NewPromServer(ctx, config.MonServer)
 		defer monServer.Stop()
+		monServer.SetCompleted()
 	}
 
 	acquired := feedRuntime.AcquireFeed(ctx, logger, config)
@@ -247,9 +248,6 @@ func main() {
 	var mon *pmon.PromMon
 	if monServer != nil {
 		mon = monServer.NewFeed(feed.ID)
-	}
-	if mon != nil {
-		mon.SetCompleted()
 	}
 
 	err = doMain(acquired.Context, feed, acquired.Source.TopicClient, acquired.Destination, acquired.Locker, mon, errChannel)

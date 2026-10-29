@@ -713,8 +713,8 @@ All application metrics include `feed_id` from the configured feed `id`. Go runt
 When `mon_server.listen` is configured, the service exposes:
 
 - `GET /metrics`: Prometheus metrics;
-- `GET /readyz`: `200` after source topics and destination tables have been
-  checked successfully, otherwise `503`.
+- `GET /readyz`: `200` once the process is initialized, before attempting to
+  acquire a feed lock.
 
 Multiple processes sharing one network namespace need different listen ports.
 
@@ -1499,8 +1499,8 @@ CREATE TABLE `/Root/aardappel_blocked_keys` (
 Если настроен `mon_server.listen`, сервис публикует:
 
 - `GET /metrics` — Prometheus metrics;
-- `GET /readyz` — `200` после успешной проверки source-топиков и destination-таблиц,
-  до этого `503`.
+- `GET /readyz` — `200` после инициализации процесса, до попытки захвата блокировки
+  feed.
 
 При нескольких процессах в одном сетевом пространстве каждому нужен отдельный listen port.
 
