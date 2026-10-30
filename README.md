@@ -227,12 +227,16 @@ stage `INITIAL_SCAN`.
 
 The initial stage establishes a stable common boundary for all streams:
 
-1. Wait for the first complete heartbeat set.
+1. Read events and write batches of up to 1000 messages while collecting the
+   first complete heartbeat set.
 2. Remember the maximum heartbeat in that set.
-3. Wait for a quorum strictly greater than that maximum.
-4. Apply accumulated changes before that position in batches of up to 1000
-   messages.
-5. Store the position and change the stage to `RUN` in the final transaction.
+3. Continue reading and writing transactions at or below that maximum until the
+   quorum advances strictly beyond it. Transactions above the maximum remain
+   buffered during this wait.
+4. Drain all transactions strictly before the synchronized quorum, including the
+   remaining partial batch.
+5. Save the synchronized position and change the stage to `RUN` in a separate
+   transaction containing no data changes.
 
 ### RUN
 
@@ -441,6 +445,7 @@ different feeds use the same effective `instance_id` and destination cluster ID.
 | `source` / `destination` | yes | Cluster IDs for each feed. |
 | `state_table` | yes | Destination service table for state and locking. |
 | `legacy_reader_scheduling` | no | Defaults to `false` (quorum-based reader scheduling). Set `true` to restore the shared FIFO reader channel. |
+| `legacy_initial_scan` | no | Defaults to `false`: streaming initial scan writes batches while seeking synchronization. Set `true` to use the previous initial scan. |
 | `commit_offset_mode` | no | Uses `CommitOffset` instead of `Commit` to commit offsets in source CDC topics. |
 | `max_concurrent_offset_commits` | no | Maximum number of concurrent `CommitOffset` requests. |
 | `streams` | yes | List of inline stream mappings or list of stream set references. |
@@ -1000,14 +1005,17 @@ CREATE TABLE IF NOT EXISTS <state_table> (
 
 ### INITIAL_SCAN
 
-Начальная стадия нужна, чтобы перейти к устойчивой общей границе всех потоков:
+Начальная стадия устанавливает устойчивую общую границу всех потоков:
 
-1. Aardappel ждёт первый полный набор heartbeat.
-2. Запоминает максимальный heartbeat в этом наборе.
-3. Ждёт следующий quorum, который строго больше этого максимума.
-4. Применяет накопленные до этой позиции изменения batches до 1000 сообщений.
-5. В последней транзакции сохраняет найденную позицию и переключает stage на
-   `RUN`.
+1. Читать события и записывать batches до 1000 сообщений, пока не получен первый
+   полный набор heartbeat.
+2. Запомнить максимальный heartbeat в этом наборе.
+3. Продолжать чтение и запись транзакций с позицией не выше этого максимума,
+   пока quorum не станет строго больше него. Транзакции выше максимума остаются
+   в памяти во время ожидания.
+4. Записать все транзакции строго до синхронного quorum, включая остаток batch.
+5. Отдельной транзакцией без изменений данных сохранить синхронную позицию
+   и переключить stage на `RUN`.
 
 ### RUN
 
@@ -1216,6 +1224,7 @@ mon_server:
 | `source` / `destination` | да | ID кластеров для feed. |
 | `state_table` | да | Путь сервисной таблицы состояния и lock в destination. |
 | `legacy_reader_scheduling` | нет | По умолчанию `false`: чтение по локальному кворуму. Значение `true` возвращает общий FIFO-канал. |
+| `legacy_initial_scan` | нет | По умолчанию `false`: потоковое начальное сканирование записывает batches во время синхронизации. Значение `true` включает предыдущий алгоритм. |
 | `commit_offset_mode` | нет | Использует `CommitOffset` вместо `Commit` для коммита оффсетов исходных CDC-топиков. |
 | `max_concurrent_offset_commits` | нет | Максимальное число одновременных запросов `CommitOffset`. |
 | `streams` | да | Список inline streams или список ссылок на наборы streams. |

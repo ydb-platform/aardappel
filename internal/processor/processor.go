@@ -50,20 +50,20 @@ func (pos *AtopmicPos) Store(value types.Position) {
 }
 
 type Processor struct {
-	messages          messageQueue
-	hbTracker         *hb_tracker.HeartBeatTracker
-	txQueue           *tx_queue.TxQueue
-	dstServerClient   *client.TableClient
-	lastPosition      *AtopmicPos
-	stateStoreQuery   string
-	stateTablePath    string
-	instanceId        string
-	stage             string
-	initialScanPos    *types.Position
-	lastDiagnosticLog time.Time
-	keyFilter         KeyFilter
+	messages        messageQueue
+	hbTracker       *hb_tracker.HeartBeatTracker
+	txQueue         *tx_queue.TxQueue
+	dstServerClient *client.TableClient
+	lastPosition    *AtopmicPos
+	stateStoreQuery string
+	stateTablePath  string
+	instanceId      string
+	stage           string
+	initialScanPos  *types.Position
+	keyFilter       KeyFilter
 
-	commitOffsetMode bool
+	commitOffsetMode  bool
+	legacyInitialScan bool
 
 	// These fields are used only when commit_offset_mode is true.
 	offsetProgressByStream     map[types.ElementaryStreamId]*partitionOffsetProgress
@@ -329,9 +329,10 @@ func selectReplicationState(ctx context.Context, client *client.TableClient, sta
 	return ReplicationState{position: types.Position{*step, *txId}, stage: *stage}, err
 }
 
-func NewProcessor(ctx context.Context, streamLayout hb_tracker.TopicPartsCount, stateTablePath string, client *client.TableClient, instanceId string, filter *config.KeyFilter, commitOffsetMode bool, maxConcurrentOffsetCommits int, legacyReaderScheduling bool) (*Processor, error) {
+func NewProcessor(ctx context.Context, streamLayout hb_tracker.TopicPartsCount, stateTablePath string, client *client.TableClient, instanceId string, filter *config.KeyFilter, commitOffsetMode bool, maxConcurrentOffsetCommits int, legacyReaderScheduling bool, legacyInitialScan bool) (*Processor, error) {
 	var p Processor
 	p.commitOffsetMode = commitOffsetMode
+	p.legacyInitialScan = legacyInitialScan
 	p.hbTracker = hb_tracker.NewHeartBeatTracker(streamLayout)
 	p.messages = newMessageQueue(streamLayout, 1000, legacyReaderScheduling)
 	p.txQueue = tx_queue.NewTxQueue()
@@ -639,16 +640,38 @@ func (processor *Processor) assignTxsToDstTables(ctx context.Context, txs []type
 	return query, RequestStats{modifications, size, perTableStats}, nil
 }
 
+const messageWaitTimeout = 5 * time.Second
+
 func (processor *Processor) doEvent(ctx context.Context) error {
-	maxEventPerIteration := 1000
-	for maxEventPerIteration > 0 {
-		maxEventPerIteration--
-		apply := processor.messages.Next()
+	var apply func() error
+	for apply == nil {
+		apply = processor.messages.WaitNext(ctx, messageWaitTimeout)
+		if ctx.Err() != nil {
+			return ctx.Err()
+		}
+		if apply == nil {
+			xlog.Debug(ctx, "No event received for 5 seconds; continuing to wait",
+				zap.String("instance_id", processor.instanceId),
+				zap.String("stage", processor.stage))
+		}
+	}
+	if err := apply(); err != nil {
+		return types.ReturnError(ctx, err, "Processor.doEvent: Unable to push event")
+	}
+	if processor.commitOffsetMode {
+		processor.scheduleOffsetCommits(ctx)
+	}
+	return nil
+}
+
+func (processor *Processor) doAvailableEvents(ctx context.Context, upTo int) error {
+	for range upTo {
+		apply := processor.messages.WaitNext(ctx, 0)
 		if apply == nil {
 			break
 		}
 		if err := apply(); err != nil {
-			errMsg := fmt.Sprintf("Processor.doEvent: Unable to push event")
+			errMsg := fmt.Sprintf("Processor.doAvailableEvents: Unable to push event")
 			return types.ReturnError(ctx, err, errMsg)
 		}
 	}
@@ -658,9 +681,27 @@ func (processor *Processor) doEvent(ctx context.Context) error {
 	return nil
 }
 
+func (processor *Processor) readUntilAnyQuorum(ctx context.Context) (types.Position, error) {
+	if err := processor.doAvailableEvents(ctx, 1000); err != nil {
+		return types.Position{}, types.ReturnError(ctx, err, "Processor.readUntilAnyQuorum")
+	}
+	for ctx.Err() == nil {
+		hb, ready := processor.hbTracker.GetQuorum()
+		if ready {
+			xlog.Debug(ctx, "Got hb quorum", zap.Any("step", hb.Step), zap.Any("tx_id", hb.TxId))
+			return hb, nil
+		}
+		// No quorum yet: wait for one event and check again without a polling sleep.
+		if err := processor.doEvent(ctx); err != nil {
+			return types.Position{}, types.ReturnError(ctx, err, "Processor.readUntilAnyQuorum")
+		}
+	}
+	return types.Position{}, ctx.Err()
+}
+
 func (processor *Processor) getHbQuorum(ctx context.Context) (*types.Position, error) {
 	// Try to get any quorum.
-	err := processor.doEvent(ctx)
+	err := processor.doAvailableEvents(ctx, 1000)
 	if err != nil {
 		errMsg := fmt.Sprintf("Processor.getHbQuorum")
 		return nil, types.ReturnError(ctx, err, errMsg)
@@ -671,23 +712,6 @@ func (processor *Processor) getHbQuorum(ctx context.Context) (*types.Position, e
 		return &hb, nil
 	}
 	return nil, nil
-}
-
-func (processor *Processor) waitHbQuorum(ctx context.Context) (types.Position, error) {
-	// Wait any quorum.
-	for ctx.Err() == nil {
-		hb, err := processor.getHbQuorum(ctx)
-		if err != nil {
-			errMsg := fmt.Sprintf("Processor.waitHbQuorum")
-			return types.Position{}, types.ReturnError(ctx, err, errMsg)
-		}
-		if hb != nil {
-			return *hb, nil
-		}
-		//TODO: Wait any hb instead of sleep here
-		time.Sleep(1 * time.Millisecond)
-	}
-	return types.Position{}, ctx.Err()
 }
 
 func (processor *Processor) waitSyncHbQuorum(ctx context.Context, boundary types.Position) (types.Position, error) {
@@ -710,7 +734,7 @@ func (processor *Processor) waitSyncHbQuorum(ctx context.Context, boundary types
 func (processor *Processor) getSyncHbQuorum(ctx context.Context) (*types.Position, error) {
 	// Get quorum after that initial scan will be finished and database will be consistent.
 	// This quorum is the first larger quorum than the max hb timestamp in the first quorum obtained in initial scan stage.
-	err := processor.doEvent(ctx)
+	err := processor.doAvailableEvents(ctx, 1000)
 	if err != nil {
 		errMsg := fmt.Sprintf("Processor.getSyncHbQuorum")
 		return nil, types.ReturnError(ctx, err, errMsg)
@@ -852,7 +876,7 @@ func (processor *Processor) DoInitialScan(ctx context.Context, dstTables []*dst_
 
 func (processor *Processor) FormatTx(ctx context.Context) (*TxBatch, int64, error) {
 	quorumWaitingDuration := time.Now().UnixMilli()
-	hb, err := processor.waitHbQuorum(ctx)
+	hb, err := processor.readUntilAnyQuorum(ctx)
 	quorumWaitingDuration = time.Now().UnixMilli() - quorumWaitingDuration
 	if err != nil {
 		errMsg := fmt.Sprintf("processor.waitFormatTx")
@@ -873,6 +897,154 @@ func (processor *Processor) FormatTx(ctx context.Context) (*TxBatch, int64, erro
 			zap.Uint32("tableId:", data.TableId))
 	}
 	return &TxBatch{TxData: txs, Position: hb, HBs: heartbeats}, quorumWaitingDuration, nil
+}
+
+// DoInitialScanStreaming reads through the entire scan, flushing full batches
+// while seeking synchronization.
+func (processor *Processor) DoInitialScanStreaming(
+	ctx context.Context,
+	dstTables []*dst_table.DstTable,
+	lockExecutor func(fn func(context.Context, table.Session, table.Transaction) error) error,
+) (*ReplicationStats, error) {
+	const batchSize = 1000
+	scanStarted := time.Now()
+	committedBatches := 0
+	xlog.Info(ctx, "Initial scan: reading until every partition has a heartbeat", zap.String("instance_id", processor.instanceId))
+	txs := make([]types.TxData, 0, batchSize)
+	stats := &ReplicationStats{PerTableStats: make([]PerTableStats, len(dstTables))}
+	var syncPosition types.Position
+	var commitDuration, quorumWaitingDuration time.Duration
+
+	pushTxs := func() error {
+		if len(txs) == 0 {
+			return nil
+		}
+		query, requestStats, err := processor.assignTxsToDstTables(ctx, txs, dstTables)
+		if err != nil {
+			return err
+		}
+		started := time.Now()
+		err = lockExecutor(func(ctx context.Context, ts table.Session, txr table.Transaction) error {
+			return processor.PushTxs(ctx, query, txr)
+		})
+		if err != nil {
+			return err
+		}
+		commitDuration += time.Since(started)
+		stats.ModificationsCount += requestStats.ModificationsCount
+		stats.RequestSize += requestStats.RequestSize
+		for i, tableStats := range requestStats.PerTableStats {
+			stats.PerTableStats[i].ModificationsCount += tableStats.ModificationsCount
+		}
+		for _, tx := range txs {
+			if err := processor.completeTx(tx); err != nil {
+				return err
+			}
+		}
+		if processor.commitOffsetMode {
+			processor.scheduleOffsetCommits(ctx)
+		}
+		clear(txs)
+		txs = txs[:0]
+		return nil
+	}
+	addTx := func(tx types.TxData) error {
+		txs = append(txs, tx)
+		if len(txs) == batchSize {
+			return pushTxs()
+		}
+		return nil
+	}
+
+	// Phase 1: Write incoming transactions until every partition has a heartbeat.
+	var firstMaxHB types.Position
+	for {
+		started := time.Now()
+		if err := processor.doEvent(ctx); err != nil {
+			return nil, err
+		}
+		quorumWaitingDuration += time.Since(started)
+		for processor.txQueue.Get() != nil {
+			if err := addTx(processor.txQueue.Pop()); err != nil {
+				return nil, err
+			}
+		}
+		maxHB, ready := processor.hbTracker.GetMaxPosition()
+		if ready {
+			firstMaxHB = maxHB
+			xlog.Info(ctx, "Initial scan: first heartbeat set received; seeking synchronization",
+				zap.String("instance_id", processor.instanceId), zap.Any("boundary", firstMaxHB))
+			break
+		}
+	}
+
+	// Phase 2: Flush through the fixed boundary while seeking a quorum beyond it.
+	// (!) Transactions above firstMaxHB remain buffered until synchronization.
+	for {
+		started := time.Now()
+		if err := processor.doEvent(ctx); err != nil {
+			return nil, err
+		}
+		quorumWaitingDuration += time.Since(started)
+		for tx := processor.txQueue.Get(); tx != nil; tx = processor.txQueue.Get() {
+			if firstMaxHB.LessThan(types.Position{Step: tx.Step, TxId: tx.TxId}) {
+				break
+			}
+			if err := addTx(processor.txQueue.Pop()); err != nil {
+				return nil, err
+			}
+		}
+		quorum, ready := processor.hbTracker.GetQuorum()
+		if ready && firstMaxHB.LessThan(quorum) {
+			syncPosition = quorum
+			xlog.Info(ctx, "Initial scan: synchronization reached; draining remaining changes",
+				zap.String("instance_id", processor.instanceId), zap.Any("position", syncPosition))
+			break
+		}
+	}
+
+	// Phase 3: Drain strictly before the synchronized position without reading ahead.
+	for tx := processor.txQueue.Get(); tx != nil; tx = processor.txQueue.Get() {
+		if !(types.Position{Step: tx.Step, TxId: tx.TxId}.LessThan(syncPosition)) {
+			break
+		}
+		if err := addTx(processor.txQueue.Pop()); err != nil {
+			return nil, err
+		}
+	}
+
+	if err := pushTxs(); err != nil {
+		return nil, err
+	}
+	xlog.Info(ctx, "Initial scan: changes written; saving RUN checkpoint",
+		zap.String("instance_id", processor.instanceId), zap.Any("position", syncPosition))
+
+	// All data is written. Finalization only persists the checkpoint and RUN.
+	started := time.Now()
+	if err := lockExecutor(func(ctx context.Context, ts table.Session, txr table.Transaction) error {
+		return processor.PushAsSingleTx(ctx, dst_table.PushQuery{}, txr, syncPosition, STAGE_RUN)
+	}); err != nil {
+		return nil, err
+	}
+	commitDuration += time.Since(started)
+	processor.lastPosition.Store(syncPosition)
+	processor.stage = STAGE_RUN
+	stats.LastHeartBeat = syncPosition
+	for _, hb := range processor.hbTracker.TakeHBsAt(syncPosition) {
+		if err := processor.completeHb(hb); err != nil {
+			return nil, err
+		}
+	}
+	if processor.commitOffsetMode {
+		processor.scheduleOffsetCommits(ctx)
+	}
+	xlog.Info(ctx, "Initial scan completed; entering RUN",
+		zap.String("instance_id", processor.instanceId), zap.Any("position", syncPosition),
+		zap.Int("committed_batches", committedBatches), zap.Int("modifications", stats.ModificationsCount),
+		zap.Duration("elapsed", time.Since(scanStarted)))
+	stats.CommitDurationMs = commitDuration.Milliseconds()
+	stats.QuorumWaitingDurationMs = quorumWaitingDuration.Milliseconds()
+	return stats, nil
 }
 
 func (processor *Processor) PushAsSingleTx(ctx context.Context, data dst_table.PushQuery, tx table.Transaction, position types.Position, stage string) error {
@@ -908,7 +1080,10 @@ func (processor *Processor) PushTxs(ctx context.Context, data dst_table.PushQuer
 func (processor *Processor) DoReplication(ctx context.Context, dstTables []*dst_table.DstTable,
 	lockExecutor func(fn func(context.Context, table.Session, table.Transaction) error) error) (*ReplicationStats, error) {
 	if processor.stage == STAGE_INITIAL_SCAN {
-		return processor.DoInitialScan(ctx, dstTables, lockExecutor)
+		if processor.legacyInitialScan {
+			return processor.DoInitialScan(ctx, dstTables, lockExecutor)
+		}
+		return processor.DoInitialScanStreaming(ctx, dstTables, lockExecutor)
 	}
 
 	batch, quorumWaitingDuration, err := processor.FormatTx(ctx)

@@ -98,7 +98,7 @@ func doMain(ctx context.Context, feed configInit.Feed, srcDb *client.TopicClient
 		dlQueue = processor.NewDlQueue(ctx, topicWriter)
 	}
 
-	prc, err := processor.NewProcessor(ctx, topics, feed.StateTable, dstDb.TableClient, feed.InstanceId, feed.KeyFilter, feed.CommitOffsetMode, feed.MaxConcurrentOffsetCommits, feed.LegacyReaderScheduling)
+	prc, err := processor.NewProcessor(ctx, topics, feed.StateTable, dstDb.TableClient, feed.InstanceId, feed.KeyFilter, feed.CommitOffsetMode, feed.MaxConcurrentOffsetCommits, feed.LegacyReaderScheduling, feed.LegacyInitialScan)
 	if err != nil {
 		xlog.Fatal(ctx, "Unable to create processor", zap.Error(err))
 	}

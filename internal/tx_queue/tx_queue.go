@@ -49,3 +49,11 @@ func (txQueue *TxQueue) PopTxsByCount(maxCount int) []types.TxData {
 	}
 	return result
 }
+
+func (txQueue *TxQueue) Get() *types.TxData {
+	return txQueue.pq.Get()
+}
+
+func (txQueue *TxQueue) Pop() types.TxData {
+	return heap.Pop(txQueue.pq).(QueueItem).item
+}

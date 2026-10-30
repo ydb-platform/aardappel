@@ -4,13 +4,13 @@ import (
 	"aardappel/internal/hb_tracker"
 	"aardappel/internal/types"
 	"context"
+	"time"
 )
 
 type messageQueue interface {
 	Enqueue(context.Context, uint32, func() error)
 	EnqueueHb(context.Context, types.HbData, func() error)
-	Next() func() error
-	Len() int
+	WaitNext(context.Context, time.Duration) func() error
 }
 
 func newMessageQueue(layout hb_tracker.TopicPartsCount, capacity int, legacy bool) messageQueue {
@@ -36,13 +36,27 @@ func (q *sharedMessageQueue) EnqueueHb(ctx context.Context, hb types.HbData, app
 	q.Enqueue(ctx, hb.StreamId.ReaderId, apply)
 }
 
-func (q *sharedMessageQueue) Next() func() error {
+// WaitNext returns nil on timeout or cancellation. Buffered events need no timer.
+func (q *sharedMessageQueue) WaitNext(ctx context.Context, timeout time.Duration) func() error {
+	if ctx.Err() != nil {
+		return nil
+	}
 	select {
 	case apply := <-q.messages:
 		return apply
 	default:
+	}
+	if timeout <= 0 {
+		return nil
+	}
+	timer := time.NewTimer(timeout)
+	defer timer.Stop()
+	select {
+	case apply := <-q.messages:
+		return apply
+	case <-ctx.Done():
+		return nil
+	case <-timer.C:
 		return nil
 	}
 }
-
-func (q *sharedMessageQueue) Len() int { return len(q.messages) }

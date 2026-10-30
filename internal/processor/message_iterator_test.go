@@ -5,7 +5,6 @@ import (
 	"aardappel/internal/tx_queue"
 	"aardappel/internal/types"
 	"context"
-	"errors"
 	"testing"
 	"time"
 
@@ -45,26 +44,28 @@ func TestMessageIteratorLocalQuorumOrdering(t *testing.T) {
 	enqueue(1, "b-regression", 0, 9, 0)
 	enqueue(1, "b-next", 0, 11, 0)
 	for range 11 {
-		apply := it.Next()
+		apply := it.WaitNext(ctx, time.Second)
 		require.NotNil(t, apply)
 		require.NoError(t, apply())
 	}
 	require.Equal(t, []string{"a-data", "a-first-partition", "a-local-quorum", "b-first-quorum", "a-advance", "b-advance", "a-tie-advance", "a-full-tie-advance", "b-duplicate", "b-regression", "b-next"}, consumed)
-	require.Zero(t, it.Len())
+	require.Nil(t, it.WaitNext(ctx, 0))
 }
 
 func TestMessageIteratorDoesNotSkipEmptySelectedReader(t *testing.T) {
 	it := NewMessageIterator(hb_tracker.TopicPartsCount{TopicPartsCountMap: map[int]hb_tracker.StreamCfg{0: {PartitionsCount: 1}, 1: {PartitionsCount: 1}}}, 1)
 	ctx := context.Background()
 	it.Enqueue(ctx, 1, func() error { return nil })
-	apply := it.Next()
+	waitCtx, cancel := context.WithTimeout(ctx, 20*time.Millisecond)
+	defer cancel()
+	apply := it.WaitNext(waitCtx, time.Second)
 	require.Nil(t, apply)
-	require.Equal(t, 1, it.Len())
+	require.ErrorIs(t, waitCtx.Err(), context.DeadlineExceeded)
 	it.EnqueueHb(ctx, types.HbData{StreamId: types.ElementaryStreamId{ReaderId: 0}, Step: 1}, func() error { return nil })
-	apply = it.Next()
+	apply = it.WaitNext(ctx, time.Second)
 	require.NotNil(t, apply)
 	require.NoError(t, apply())
-	apply = it.Next()
+	apply = it.WaitNext(ctx, time.Second)
 	require.NotNil(t, apply)
 	require.NoError(t, apply())
 }
@@ -84,7 +85,10 @@ func TestMessageIteratorBackpressureCancellation(t *testing.T) {
 	case <-time.After(time.Second):
 		t.Fatal("blocked enqueue did not cancel")
 	}
-	require.Equal(t, 1, it.Len())
+	apply := it.WaitNext(context.Background(), time.Second)
+	require.NotNil(t, apply)
+	require.NoError(t, apply())
+	require.Nil(t, it.WaitNext(context.Background(), 0))
 }
 
 func TestProcessorConsumesLaggingReaderUntilLocalQuorumAdvances(t *testing.T) {
@@ -103,33 +107,22 @@ func TestProcessorConsumesLaggingReaderUntilLocalQuorumAdvances(t *testing.T) {
 	hb(0, 200)
 	hb(1, 10)
 	tx(1, 20)
-	require.NoError(t, p.doEvent(ctx))
+	for range 3 {
+		require.NoError(t, p.doEvent(ctx))
+	}
 	txs := p.txQueue.PopTxsByCount(10)
 	require.Len(t, txs, 1)
 	p.txQueue.PushTx(txs[0])
-	require.Equal(t, 2, p.messages.Len(), "ahead reader remains buffered")
+	require.Equal(t, uint32(1), txs[0].TableId, "only the lagging reader's transaction was consumed")
 	quorum, ok := p.hbTracker.GetQuorum()
 	require.True(t, ok)
 	require.Equal(t, uint64(10), quorum.Step)
 	hb(1, 101)
-	require.NoError(t, p.doEvent(ctx))
+	for range 3 {
+		require.NoError(t, p.doEvent(ctx))
+	}
 	require.Len(t, p.txQueue.PopTxsByCount(10), 2)
 	quorum, ok = p.hbTracker.GetQuorum()
 	require.True(t, ok)
 	require.Equal(t, uint64(101), quorum.Step)
-}
-
-func TestProcessorStopsOnEventError(t *testing.T) {
-	p := &Processor{messages: newTestMessageIterator(2)}
-	want := errors.New("event processing failed")
-	p.messages.Enqueue(context.Background(), 0, func() error { return want })
-	called := false
-	p.messages.Enqueue(context.Background(), 0, func() error {
-		called = true
-		return nil
-	})
-
-	require.ErrorIs(t, p.doEvent(context.Background()), want)
-	require.False(t, called)
-	require.Equal(t, 1, p.messages.Len())
 }

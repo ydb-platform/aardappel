@@ -52,6 +52,7 @@ func (pq *PriorityQueue) Pop() interface{} {
 	currentLen := len(currentItems)
 	item := currentItems[currentLen-1]
 	item.index = -1
+	currentItems[currentLen-1] = QueueItem{}
 	pq.items = currentItems[0 : currentLen-1]
 	return item
 }
