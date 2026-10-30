@@ -69,16 +69,18 @@ func TestMonCount(t *testing.T) {
 	assert.Contains(t, string(idleBody), "go_goroutines")
 	assert.NotContains(t, string(idleBody), "feed_id")
 
+	// Readiness must not depend on selecting a feed or registering its metrics.
+	server.SetCompleted()
+
+	res, _ = http.Get("http://127.0.0.1:8080/readyz")
+	assert.Equal(t, res.StatusCode, 200)
+	res.Body.Close()
+
 	p := server.NewFeed("test-feed")
 	p.ModificationCount(123)
 	p.ModificationCountFromTopic(456, "tag_1")
 	p.TopicWithoutHB(false, "tag_1")
 	p.TopicWithoutHB(true, "tag_2")
-	p.SetCompleted()
-
-	res, _ = http.Get("http://127.0.0.1:8080/readyz")
-	assert.Equal(t, res.StatusCode, 200)
-	res.Body.Close()
 
 	res, err = http.Get("http://127.0.0.1:8080/metrics")
 	assert.NoError(t, err)
