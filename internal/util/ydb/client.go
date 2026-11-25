@@ -1,7 +1,6 @@
 package client
 
 import (
-	"aardappel/internal/util/xlog"
 	"context"
 	"errors"
 	"fmt"
@@ -28,8 +27,7 @@ func HandleRequestError(ctx context.Context, err error) error {
 		return nil
 	}
 	if errors.Is(ctx.Err(), context.DeadlineExceeded) {
-		xlog.Error(ctx, "Query timed out", zap.Error(err))
-		return fmt.Errorf("query timed out")
+		return fmt.Errorf("query timed out: %w", err)
 	} else {
 		return err
 	}
