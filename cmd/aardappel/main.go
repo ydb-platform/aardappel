@@ -72,7 +72,8 @@ func DoReplication(ctx context.Context, prc *processor.Processor, dstTables []*d
 
 func doMain(ctx context.Context, feed configInit.Feed, srcDb *client.TopicClient, dstDb *client.YdbClient,
 	locker *ydb_locker.Locker, mon pmon.Metrics, errChannel chan error) error {
-	topics := feedRuntime.DescribeTopics(ctx, feed, srcDb)
+	const maxConcurrentTopicDescribes = 8
+	topics := feedRuntime.DescribeTopics(ctx, feed, srcDb, maxConcurrentTopicDescribes)
 
 	xlog.Debug(ctx, "All topics described",
 		zap.Int("total parts", topics.TotalPartsCount))

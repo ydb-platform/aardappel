@@ -23,6 +23,7 @@ import (
 	"github.com/ydb-platform/ydb-go-sdk/v3/table"
 	ydbTypes "github.com/ydb-platform/ydb-go-sdk/v3/table/types"
 	"go.uber.org/zap"
+	"golang.org/x/sync/errgroup"
 )
 
 // AcquiredFeed contains the resources needed to run one owned feed.
@@ -35,7 +36,7 @@ type AcquiredFeed struct {
 	Cleanup     func()
 }
 
-// AcquireFeed prepares destinations, acquires ownership, and checks the selected source.
+// AcquireFeed prepares destinations, acquires ownership, and connects to the selected source.
 func AcquireFeed(ctx context.Context, logger *zap.Logger, config configInit.Config) *AcquiredFeed {
 	ctx, cancel := context.WithCancel(ctx)
 	ready := false
@@ -99,14 +100,10 @@ func AcquireFeed(ctx context.Context, logger *zap.Logger, config configInit.Conf
 		srcConnection = ClusterConnection{Client: srcDb, Options: srcOpts}
 		xlog.Debug(ctx, "Connected to source cluster", zap.String("feed_id", feed.ID), zap.String("cluster_id", source.ID))
 	}
-	srcDb := srcConnection.Client
-	if !trySrcConnect(lockCtx, feed, srcDb) {
-		xlog.Fatal(ctx, "Source topic checks failed; exiting", zap.String("feed_id", feed.ID), zap.String("cluster_id", source.ID))
-	}
 	ready = true
 	return &AcquiredFeed{
 		Feed:        feed,
-		Source:      srcDb,
+		Source:      srcConnection.Client,
 		Destination: dstDb,
 		Locker:      locker,
 		Context:     lockCtx,
@@ -158,16 +155,6 @@ func initReplicaStateTable(ctx context.Context, client *client.TableClient, stat
 		return nil
 	}
 	return err
-}
-
-func trySrcConnect(ctx context.Context, feed configInit.Feed, srcDb *client.YdbClient) bool {
-	res := DescribeTopics(ctx, feed, srcDb.TopicClient)
-	if len(res.TopicPartsCountMap) == len(feed.Streams) {
-		xlog.Debug(ctx, "Source topic checks passed", zap.String("feed_id", feed.ID), zap.String("cluster_id", feed.Source))
-		return true
-	} else {
-		return false
-	}
 }
 
 type ClusterConnection struct {
@@ -292,22 +279,36 @@ func prepareFeeds(ctx context.Context, logger *zap.Logger, config configInit.Con
 }
 
 // DescribeTopics loads partition counts and monitoring tags for a feed.
-func DescribeTopics(ctx context.Context, feed configInit.Feed, srcDb *client.TopicClient) hb_tracker.TopicPartsCount {
-	topics := hb_tracker.NewTopicPartsCount()
-	for i := 0; i < len(feed.Streams); i++ {
-		cfgStream := &feed.Streams[i]
-
-		desc, err := srcDb.Describe(ctx, cfgStream.SrcTopic)
-		if err != nil {
-			xlog.Fatal(ctx, "Unable to describe topic",
-				zap.String("src_topic", cfgStream.SrcTopic),
-				zap.Error(err))
+func DescribeTopics(ctx context.Context, feed configInit.Feed, srcDb *client.TopicClient, maxConcurrent int) hb_tracker.TopicPartsCount {
+	group, describeCtx := errgroup.WithContext(ctx)
+	group.SetLimit(maxConcurrent)
+	streams := make([]hb_tracker.StreamCfg, len(feed.Streams))
+	for i, stream := range feed.Streams {
+		if describeCtx.Err() != nil {
+			break
 		}
+		group.Go(func() error {
+			desc, err := srcDb.Describe(describeCtx, stream.SrcTopic)
+			if err != nil {
+				return fmt.Errorf("topic %q: %w", stream.SrcTopic, err)
+			}
 
-		monTag := misc.TernaryIf(len(cfgStream.MonTag) > 0, cfgStream.MonTag, cfgStream.SrcTopic)
+			monTag := misc.TernaryIf(len(stream.MonTag) > 0, stream.MonTag, stream.SrcTopic)
+			streams[i] = hb_tracker.StreamCfg{PartitionsCount: len(desc.Partitions), MonTag: monTag}
+			return nil
+		})
+	}
+	if err := group.Wait(); err != nil {
+		xlog.Fatal(ctx, "Unable to describe topic", zap.Error(err))
+	}
+	if err := ctx.Err(); err != nil {
+		xlog.Fatal(ctx, "Unable to describe topics", zap.Error(err))
+	}
 
-		topics.TopicPartsCountMap[i] = hb_tracker.StreamCfg{PartitionsCount: len(desc.Partitions), MonTag: monTag}
-		topics.TotalPartsCount += len(desc.Partitions)
+	topics := hb_tracker.NewTopicPartsCount()
+	for i, stream := range streams {
+		topics.TopicPartsCountMap[i] = stream
+		topics.TotalPartsCount += stream.PartitionsCount
 	}
 
 	return *topics
