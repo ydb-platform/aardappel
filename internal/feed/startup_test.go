@@ -8,12 +8,14 @@ import (
 
 	"aardappel/internal/config"
 	"aardappel/internal/processor"
+	client "aardappel/internal/util/ydb"
 	"aardappel/internal/util/ydb/ydb_locker"
 	"aardappel/tests/common/local_ydb"
 
 	"github.com/google/uuid"
 	"github.com/stretchr/testify/require"
 	"github.com/ydb-platform/ydb-go-sdk/v3"
+	"github.com/ydb-platform/ydb-go-sdk/v3/balancers"
 	"github.com/ydb-platform/ydb-go-sdk/v3/table"
 	"go.uber.org/zap"
 )
@@ -46,6 +48,26 @@ func startupTestConfig(t *testing.T) (context.Context, config.Config, *ydb.Drive
 		})
 	}
 	return ctx, cfg, db
+}
+
+func TestDescribeTopics(t *testing.T) {
+	local := local_ydb.StartupYdb(t, *local_ydb.NewYdbSettings())
+	ctx, cancel := context.WithTimeout(context.Background(), time.Minute)
+	defer cancel()
+	db, err := client.NewYdbClient(ctx, zap.NewNop(), local.ConnectionString(), ydb.WithBalancer(balancers.SingleConn()))
+	require.NoError(t, err)
+	defer func() { require.NoError(t, db.GetDriver().Close(ctx)) }()
+
+	suffix := uuid.New().String()[:8]
+	var feed config.Feed
+	for i, partitions := range []int64{1, 2, 3} {
+		topic := fmt.Sprintf("describe_%s_%d", suffix, i)
+		local_ydb.CreateTopic(t, ctx, db.GetDriver(), topic, "consumer", partitions)
+		feed.Streams = append(feed.Streams, config.Stream{SrcTopic: topic})
+	}
+	topics := DescribeTopics(ctx, feed, db.TopicClient, 2)
+	require.Len(t, topics.TopicPartsCountMap, 3)
+	require.Equal(t, 6, topics.TotalPartsCount)
 }
 
 func TestPrepareFeedsHappyPath(t *testing.T) {
