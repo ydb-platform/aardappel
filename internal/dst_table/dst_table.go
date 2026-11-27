@@ -5,6 +5,7 @@ import (
 	"aardappel/internal/util/xlog"
 	client "aardappel/internal/util/ydb"
 	"context"
+	"errors"
 	"fmt"
 	"github.com/ydb-platform/ydb-go-sdk/v3/table"
 	"github.com/ydb-platform/ydb-go-sdk/v3/table/options"
@@ -86,6 +87,12 @@ func (dstTable *DstTable) GenQuery(ctx context.Context, txData []types.TxData, g
 	query, err := GenQuery(ctx, dstTable.tableInfo, txData, globalStatementNum)
 	if err != nil {
 		xlog.Error(ctx, "Can't gen query", zap.Error(err))
+	}
+	if errors.Is(err, errUnknownColumn) {
+		if refreshErr := dstTable.Init(ctx); refreshErr != nil {
+			return PushQuery{}, fmt.Errorf("refresh schema for %s after %v: %w", dstTable.tablePath, err, refreshErr)
+		}
+		return GenQuery(ctx, dstTable.tableInfo, txData, globalStatementNum)
 	}
 	return query, err
 }

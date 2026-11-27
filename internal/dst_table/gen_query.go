@@ -6,6 +6,7 @@ import (
 	"context"
 	"encoding/base64"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"github.com/google/uuid"
 	"github.com/ydb-platform/ydb-go-sdk/v3/table"
@@ -317,6 +318,8 @@ func CheckPrimaryKeySize(tablePk []string, updatePk []json.RawMessage) error {
 	return nil
 }
 
+var errUnknownColumn = errors.New("unknown dst table column")
+
 func GenListParam(ctx context.Context, tableMetaInfo TableMetaInfo, txsData []UpdatingData) (ydb_types.Value, error) {
 	values := make([]ydb_types.Value, 0, len(txsData))
 	for row, txData := range txsData {
@@ -340,7 +343,7 @@ func GenListParam(ctx context.Context, tableMetaInfo TableMetaInfo, txsData []Up
 		for columnName, columnValue := range txData.ColumnValues {
 			_, columnExist := tableMetaInfo.Columns[columnName]
 			if !columnExist {
-				return nil, fmt.Errorf("Column [%s] is not in dst table scheme", columnName)
+				return nil, fmt.Errorf("%w: %s", errUnknownColumn, columnName)
 			}
 			value, err := ConvertToYDBValue(columnValue, tableMetaInfo.Columns[columnName].Type)
 			if err != nil {

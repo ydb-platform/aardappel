@@ -330,9 +330,9 @@ column to destination first, then to source, and only then begin writing that
 column in source. Otherwise Aardappel may receive a column unknown to its
 destination schema and stop replication.
 
-Each destination schema is read once at startup and cached in memory. Restart
-Aardappel after a destination schema change, before dependent source messages are
-produced. On restart, it runs `DescribeTable` again and refreshes its local schema.
+Each destination schema is read once at startup and cached in memory. If a CDC
+message contains a column missing from the cache, Aardappel refreshes the cache
+and tries to build the query again.
 
 ## Configuration
 
@@ -771,8 +771,8 @@ context and releasing the lock.
 - Reordering unchanged `src_topic → dst_table` pairs is safe after restart.
   Changing stream membership, mappings, or consumers requires a common-checkpoint
   migration plan.
-- Configuration and destination schemas are loaded only at startup; restart
-  Aardappel for changes to take effect.
+- Configuration is loaded only at startup. Restart Aardappel for changes to
+  take effect.
 - Run Aardappel in the same network or location as destination YDB. Topic reading
   naturally tolerates source-side delay, while destination transactions use a
   5-second timeout and are not designed for long or unstable cross-region latency.
@@ -1110,11 +1110,9 @@ source и только после этого начинайте записыва
 Иначе Aardappel может получить сообщение с ещё неизвестной destination-схеме
 колонкой и остановить репликацию.
 
-Схема каждой destination-таблицы читается один раз при запуске и затем хранится в
-памяти. После изменения destination-схемы Aardappel необходимо перезапустить,
-прежде чем в source начнут появляться сообщения, использующие новые колонки или
-типы. При таком перезапуске сервис повторно выполнит `DescribeTable` и обновит
-локальное представление схемы.
+Схема каждой destination-таблицы читается при запуске и затем хранится в памяти.
+Если в CDC-сообщении есть колонка, которой нет в кэше схемы destination-таблицы,
+Aardappel обновит кэш и попробует собрать запрос ещё раз.
 
 ## Конфигурация
 
@@ -1564,8 +1562,8 @@ context и освобождая lock.
 - Перестановка неизменных пар `src_topic → dst_table` допустима после рестарта.
   Изменение состава streams, соответствий или consumer требует плана миграции
   общего checkpoint.
-- Конфигурация и схемы destination-таблиц загружаются только при старте. Их
-  изменения вступают в силу после перезапуска Aardappel.
+- Конфигурация загружается только при старте. Её изменения вступают в силу
+  после перезапуска Aardappel.
 - Рекомендуется запускать Aardappel в той же сети или локации, что и destination
   YDB. Topic-reading естественным образом допускает задержки со стороны source, а
   транзакционные запросы к destination выполняются с timeout 5 секунд и не

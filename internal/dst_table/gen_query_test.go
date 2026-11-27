@@ -50,7 +50,7 @@ func TestColumnNameNotInScheme(t *testing.T) {
 	txData, _ := reader.ParseTxData(ctx, []byte("{\"update\":{\"value10\":\"15\", \"value3\":1.00000009},\"key\":[16,\"MTY=\"],\"ts\":[18446744073709551614,18446744073709551614]}"), 0)
 	_, err := GenQueryFromUpdateTx(ctx, GetTestTableMetaInfo(), []UpdatingData{CreateData(txData)}, 0, 1)
 	require.NotNil(t, err)
-	targetErr := "GenQueryFromUpdateTx: Column [value10] is not in dst table scheme"
+	targetErr := "GenQueryFromUpdateTx: unknown dst table column: value10"
 	assert.Equal(t, targetErr, err.Error())
 }
 
