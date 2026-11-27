@@ -8,6 +8,7 @@ import (
 	client "aardappel/internal/util/ydb"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"sync"
@@ -19,6 +20,7 @@ import (
 type StreamInfo struct {
 	Id              uint32
 	TopicPath       string
+	Consumer        string
 	PartCount       int
 	ProblemStrategy string
 }
@@ -208,15 +210,24 @@ func ReadTopic(ctx context.Context, streamInfo StreamInfo, reader *client.TopicR
 	}
 
 	defer func() {
-		err := reader.Close(ctx)
-		xlog.Error(ctx, "stop reader call returns", zap.Error(err))
+		if err := reader.Close(ctx); err != nil {
+			log, msg := xlog.Error, "Unable to close topic reader"
+			if errors.Is(err, ctx.Err()) {
+				log, msg = xlog.Warn, "Topic reader close interrupted"
+			}
+			log(ctx, msg, zap.String("src_topic", streamInfo.TopicPath),
+				zap.String("consumer", streamInfo.Consumer), zap.Error(err))
+		}
 	}()
 
 	for ctx.Err() == nil {
 		msg, err := reader.ReadMessage(ctx)
 		if err != nil {
-			if ctx.Err() != nil {
-				xlog.Error(ctx, "Unable to read message", zap.Error(err))
+			if !errors.Is(err, ctx.Err()) {
+				xlog.Error(ctx, "Unable to read message",
+					zap.String("src_topic", streamInfo.TopicPath),
+					zap.String("consumer", streamInfo.Consumer),
+					zap.Error(err))
 			}
 			return
 		}

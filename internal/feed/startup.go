@@ -53,6 +53,7 @@ func AcquireFeed(ctx context.Context, logger *zap.Logger, config configInit.Conf
 	if len(candidates) == 0 {
 		xlog.Fatal(ctx, "No feeds passed startup checks; exiting", zap.Int("configured_feeds", len(config.Feeds)))
 	}
+	xlog.Info(ctx, "Feed startup checks completed", zap.Int("feed_count", len(config.Feeds)))
 	allFeedsHealthy := len(candidates) == len(config.Feeds)
 	selected, acquired := SelectAnyFeed(ctx, candidates, allFeedsHealthy && config.WaitForFeed, defaultLockCheckInterval)
 	if !acquired {

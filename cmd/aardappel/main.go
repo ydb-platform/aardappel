@@ -35,6 +35,7 @@ func EstimateReplicationLagSec(pos types.Position) float32 {
 
 func DoReplication(ctx context.Context, prc *processor.Processor, dstTables []*dst_table.DstTable,
 	lockExecutor func(fn func(context.Context, table.Session, table.Transaction) error) error, mon pmon.Metrics) error {
+	legacyInitialScan := prc.IsLegacyInitialScan()
 	passed := time.Now().UnixMilli()
 	stats, err := prc.DoReplication(ctx, dstTables, lockExecutor)
 	if err != nil {
@@ -58,7 +59,10 @@ func DoReplication(ctx context.Context, prc *processor.Processor, dstTables []*d
 			mon.ModificationCountFromTopic(stats.PerTableStats[i].ModificationsCount, monTag)
 		}
 	}
-	xlog.Debug(ctx, "Replication step ok", zap.Int("modifications", stats.ModificationsCount),
+	if legacyInitialScan && stats.ModificationsCount == 0 {
+		return nil
+	}
+	xlog.Info(ctx, "Replication step ok", zap.Int("modifications", stats.ModificationsCount),
 		zap.Float32("mps", perSecond),
 		zap.Uint64("last quorum HB step", stats.LastHeartBeat.Step),
 		zap.Uint64("last quorum HB tx_id", stats.LastHeartBeat.TxId),
@@ -74,7 +78,8 @@ func doMain(ctx context.Context, feed configInit.Feed, srcDb *client.TopicClient
 	locker *ydb_locker.Locker, mon pmon.Metrics, errChannel chan error) error {
 	topics := feedRuntime.DescribeTopics(ctx, feed, srcDb)
 
-	xlog.Debug(ctx, "All topics described",
+	xlog.Info(ctx, "All topics described",
+		zap.String("feed_id", feed.ID),
 		zap.Int("total parts", topics.TotalPartsCount))
 
 	var conflictHandler processor.ConflictHandler
@@ -145,11 +150,15 @@ func doMain(ctx context.Context, feed configInit.Feed, srcDb *client.TopicClient
 		streamInfo := topicReader.StreamInfo{
 			Id:              uint32(i),
 			TopicPath:       cfgStream.SrcTopic,
+			Consumer:        cfgStream.Consumer,
 			PartCount:       topics.TopicPartsCountMap[i].PartitionsCount,
 			ProblemStrategy: cfgStream.ProblemStrategy}
 		xlog.Debug(ctx, "Start reading")
 		go topicReader.ReadTopic(ctx, streamInfo, reader, prc, conflictHandler, updateCb, dlQueue, errChannel, feed.CommitOffsetMode)
 	}
+	xlog.Info(ctx, "Replication readers started",
+		zap.String("feed_id", feed.ID),
+		zap.Int("stream_count", len(feed.Streams)))
 
 	lockExecutor := func(fn func(context.Context, table.Session, table.Transaction) error) error {
 		if ctx.Err() != nil {
@@ -195,6 +204,7 @@ func main() {
 	// Setup logging
 	logger := xlog.SetupLogging(config.LogLevel)
 	xlog.SetInternalLogger(logger)
+	xlog.Info(ctx, "Aardappel starting")
 
 	errChannel := make(chan error)
 
@@ -252,7 +262,7 @@ func main() {
 
 	err = doMain(acquired.Context, feed, acquired.Source.TopicClient, acquired.Destination, acquired.Locker, mon, errChannel)
 
-	if err != nil {
+	if err != nil && !errors.Is(err, ctx.Err()) {
 		xlog.Error(ctx, "Replication stopped with an error", zap.String("feed_id", feed.ID), zap.Error(err))
 	} else {
 		xlog.Info(ctx, "Replication stopped", zap.String("feed_id", feed.ID))

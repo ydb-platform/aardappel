@@ -14,6 +14,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -363,7 +364,8 @@ func NewProcessor(ctx context.Context, streamLayout hb_tracker.TopicPartsCount, 
 		xlog.Debug(ctx, "key filter created", zap.Uint64("blocked keys", p.keyFilter.GetBlockedKeysCount()))
 	}
 
-	xlog.Debug(ctx, "processor created",
+	xlog.Info(ctx, "processor created",
+		zap.String("stage", state.stage),
 		zap.Uint64("last step:", state.position.Step),
 		zap.Uint64("last tx_id:", state.position.TxId))
 
@@ -1047,6 +1049,15 @@ func (processor *Processor) DoInitialScanStreaming(
 	return stats, nil
 }
 
+func replicationExecuteError(query string, err error) error {
+	const limit = 4 * 1024
+	if len(query) > limit {
+		return fmt.Errorf("%w; yql=%q [truncated from %d bytes]",
+			err, strings.ToValidUTF8(query[:limit], ""), len(query))
+	}
+	return fmt.Errorf("%w; yql=%q", err, query)
+}
+
 func (processor *Processor) PushAsSingleTx(ctx context.Context, data dst_table.PushQuery, tx table.Transaction, position types.Position, stage string) error {
 	stateParam := table.NewQueryParameters(
 		table.ValueParam("stage", ydbTypes.UTF8Value(stage)),
@@ -1058,9 +1069,10 @@ func (processor *Processor) PushAsSingleTx(ctx context.Context, data dst_table.P
 
 	ctxWithTimeout, cancel := context.WithTimeout(ctx, client.DEFAULT_TIMEOUT)
 	defer cancel()
-	_, err := tx.Execute(ctxWithTimeout, data.Query+processor.stateStoreQuery, &param)
+	query := data.Query + processor.stateStoreQuery
+	_, err := tx.Execute(ctxWithTimeout, query, &param)
 	if err != nil {
-		return client.HandleRequestError(ctx, err)
+		return replicationExecuteError(query, client.HandleRequestError(ctxWithTimeout, err))
 	}
 	_, err = tx.CommitTx(ctxWithTimeout)
 	return client.HandleRequestError(ctxWithTimeout, err)
@@ -1071,10 +1083,14 @@ func (processor *Processor) PushTxs(ctx context.Context, data dst_table.PushQuer
 	defer cancel()
 	_, err := tx.Execute(ctxWithTimeout, data.Query, &data.Parameters)
 	if err != nil {
-		return client.HandleRequestError(ctxWithTimeout, err)
+		return replicationExecuteError(data.Query, client.HandleRequestError(ctxWithTimeout, err))
 	}
 	_, err = tx.CommitTx(ctxWithTimeout)
 	return client.HandleRequestError(ctxWithTimeout, err)
+}
+
+func (processor *Processor) IsLegacyInitialScan() bool {
+	return processor.stage == STAGE_INITIAL_SCAN && processor.legacyInitialScan
 }
 
 func (processor *Processor) DoReplication(ctx context.Context, dstTables []*dst_table.DstTable,
